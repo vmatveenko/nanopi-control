@@ -26,7 +26,7 @@ jobs:
           FEED_DIR: ${{ github.workspace }}/..
           PACKAGES: luci-app-nanopi-control luci-i18n-nanopi-control-ru
           BUILD_LOG: 1
-          V: s
+          V: c
 
       - name: Prepare stable release filenames
         shell: bash
