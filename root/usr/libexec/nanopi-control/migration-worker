@@ -94,7 +94,7 @@ transfer() {
 	copy_count="$((p2_start - 64))"
 
 	write_job unmount_target 5 1 0 "Unmounting old target partitions" ""
-	awk -v target="$target" '$10 ~ ("^" target "p[0-9]+$") { print $5 }' /proc/self/mountinfo 2>/dev/null | while IFS= read -r mountpoint; do
+	awk -v target="$target" '$1 ~ ("^" target "p[0-9]+$") { print $2 }' /proc/mounts 2>/dev/null | while IFS= read -r mountpoint; do
 		[ -n "$mountpoint" ] && umount "$mountpoint"
 	done
 
@@ -128,13 +128,13 @@ transfer() {
 	TARGET_MOUNTED=1
 
 	write_job copy 42 1 0 "Copying the current OpenWrt installation" ""
-	rsync -aH -x --numeric-ids --delete \
+	rsync -aHS -x --numeric-ids --delete \
 		--exclude='/dev' --exclude='/proc' --exclude='/sys' --exclude='/tmp' \
 		--exclude='/run' --exclude='/mnt' --exclude='/overlay' --exclude='/lost+found' \
 		/ "$TARGET_MOUNT/" || fail "System copy failed"
 
 	write_job synchronize 75 1 0 "Running final synchronization" ""
-	rsync -aH -x --numeric-ids --delete \
+	rsync -aHS -x --numeric-ids --delete \
 		--exclude='/dev' --exclude='/proc' --exclude='/sys' --exclude='/tmp' \
 		--exclude='/run' --exclude='/mnt' --exclude='/overlay' --exclude='/lost+found' \
 		/ "$TARGET_MOUNT/" || fail "Final synchronization failed"
@@ -160,7 +160,7 @@ transfer() {
 }
 
 expand() {
-	local status disk partition disk_name part_name disk_sectors part_start old_size new_size tries source
+	local status disk partition disk_name part_name disk_sectors part_start old_size new_size desired_size tries source
 
 	write_job verify_boot 5 1 0 "Verifying that OpenWrt is running from eMMC" ""
 	status="$($DETECT --json)" || fail "Unable to read storage status"
@@ -173,21 +173,25 @@ expand() {
 	disk_sectors="$(cat "/sys/class/block/$disk_name/size")"
 	part_start="$(cat "/sys/class/block/$part_name/start")"
 	old_size="$(cat "/sys/class/block/$part_name/size")"
+	desired_size="$((disk_sectors - part_start))"
 	source="$(jsonfilter -i "$STATE_FILE" -e '@.source' 2>/dev/null)"
 
-	write_job expand_partition 25 1 0 "Expanding the eMMC partition" ""
-	parted -s "$disk" unit s resizepart 2 "$((disk_sectors - 1))s" || fail "Unable to expand partition table"
-	partprobe "$disk" >/dev/null 2>&1 || true
+	new_size="$old_size"
+	if [ "$old_size" -lt "$desired_size" ]; then
+		write_job expand_partition 25 1 0 "Expanding the eMMC partition" ""
+		parted -s "$disk" unit s resizepart 2 "$((disk_sectors - 1))s" || fail "Unable to expand partition table"
+		partprobe "$disk" >/dev/null 2>&1 || true
 
-	tries=0
-	new_size="$(cat "/sys/class/block/$part_name/size")"
-	while [ "$new_size" -le "$old_size" ] && [ "$tries" -lt 10 ]; do
-		sleep 1
+		tries=0
 		new_size="$(cat "/sys/class/block/$part_name/size")"
-		tries="$((tries + 1))"
-	done
+		while [ "$new_size" -lt "$desired_size" ] && [ "$tries" -lt 10 ]; do
+			sleep 1
+			new_size="$(cat "/sys/class/block/$part_name/size")"
+			tries="$((tries + 1))"
+		done
+	fi
 
-	if [ "$new_size" -le "$old_size" ]; then
+	if [ "$new_size" -lt "$desired_size" ]; then
 		write_persistent_state "$STATE_FILE" partition_expanded_reboot_required "$source" "$disk"
 		$DETECT >/dev/null 2>&1 || true
 		write_job reboot_required 100 0 1 "Partition table was updated. Reboot once, then return to finish filesystem expansion." ""
@@ -195,7 +199,7 @@ expand() {
 		return 0
 	fi
 
-	[ "$new_size" -eq "$((disk_sectors - part_start))" ] || fail "Kernel reported an unexpected partition size"
+	[ "$new_size" -eq "$desired_size" ] || fail "Kernel reported an unexpected partition size"
 	write_job expand_filesystem 70 1 0 "Expanding the ext4 filesystem" ""
 	resize2fs "$partition" || fail "Unable to expand ext4 filesystem"
 	sync

@@ -175,6 +175,7 @@ return view.extend({
 		const update = data[4] || {};
 		const internalPresent = !!status.internal_device;
 		const transferReady = !!status.transfer_available;
+		const expansionReady = !!status.expand_available;
 		const rootBytes = Number(status.root_total_kib || 0) * 1024;
 		const freeBytes = Number(status.root_available_kib || 0) * 1024;
 		const memory = info.memory || {};
@@ -197,12 +198,12 @@ return view.extend({
 			badge(_('Boot source'), mediumLabel(status.boot_medium), status.root_partition || '-', status.boot_medium === 'sd' ? '#d97706' : '#16803a'),
 			badge(_('Internal storage'), internalPresent ? _('Detected') : _('Not detected'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : '-', internalPresent ? '#16803a' : '#b42318'),
 			badge(_('System partition'), formatBytes(rootBytes), _('Available: %s').format(formatBytes(freeBytes)), '#0066cc'),
-			badge(_('Transfer'), transferReady ? _('Available') : _('Not required'), transferReady ? _('The system is running from an SD card') : _('The system is not running from an SD card'), transferReady ? '#d97706' : '#16803a')
+			badge(_('Transfer'), transferReady ? _('Available') : expansionReady ? _('Continue') : _('Not required'), transferReady ? _('The system is running from an SD card') : expansionReady ? _('Internal storage expansion is pending') : _('The system is not running from an SD card'), transferReady || expansionReady ? '#d97706' : '#16803a')
 		]));
 
-		if (transferReady) {
+		if (transferReady || expansionReady) {
 			root.appendChild(E('div', { 'class': 'cbi-section' }, [
-				E('p', {}, _('The system is running from an SD card and can be prepared for transfer to internal eMMC.')),
+				E('p', {}, transferReady ? _('The system is running from an SD card and can be prepared for transfer to internal eMMC.') : _('The system is running from eMMC and is ready for final storage expansion.')),
 				E('a', {
 					'href': L.url('admin/services/nanopi-control/transfer'),
 					'class': 'btn cbi-button cbi-button-action important'

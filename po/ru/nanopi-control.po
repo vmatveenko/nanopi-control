@@ -256,3 +256,12 @@ msgstr "Проверка обновлений ещё не выполнялась
 
 msgid "NanoPi Control updates"
 msgstr "Обновления NanoPi Control"
+
+msgid "Continue"
+msgstr "Продолжить"
+
+msgid "Internal storage expansion is pending"
+msgstr "Ожидается расширение внутренней памяти"
+
+msgid "The system is running from eMMC and is ready for final storage expansion."
+msgstr "Система загружена с eMMC и готова к заключительному расширению памяти."
