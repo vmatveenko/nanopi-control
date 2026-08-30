@@ -6,7 +6,10 @@
 			"type": "firstchild"
 		},
 		"depends": {
-			"acl": [ "luci-app-nanopi-control" ]
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/tmp/nanopi-control/show-transfer": "file"
+			}
 		}
 	},
 	"admin/services/nanopi-control/overview": {
@@ -14,7 +17,7 @@
 		"order": 1,
 		"action": {
 			"type": "view",
-			"path": "nanopi-control/overview"
+			"path": "nanopi-control/dashboard"
 		},
 		"depends": {
 			"acl": [ "luci-app-nanopi-control" ]
@@ -25,7 +28,7 @@
 		"order": 2,
 		"action": {
 			"type": "view",
-			"path": "nanopi-control/sd-to-emmc"
+			"path": "nanopi-control/migration"
 		},
 		"depends": {
 			"acl": [ "luci-app-nanopi-control" ]

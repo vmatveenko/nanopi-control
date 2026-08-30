@@ -248,6 +248,18 @@ msgstr "Операция расширит второй раздел и его ф
 msgid "Expand internal storage"
 msgstr "Расширить внутреннюю память"
 
+msgid "Confirm boot from eMMC"
+msgstr "Подтвердить загрузку с eMMC"
+
+msgid "Unable to confirm eMMC boot"
+msgstr "Не удалось подтвердить загрузку с eMMC"
+
+msgid "Power off, remove the SD card, boot from eMMC and confirm it here."
+msgstr "Выключите устройство, извлеките SD-карту, загрузитесь с eMMC и подтвердите загрузку здесь."
+
+msgid "Use all available internal storage after boot confirmation."
+msgstr "Использовать всю внутреннюю память после подтверждения загрузки."
+
 msgid "The transfer assistant is not available in the current boot state."
 msgstr "Мастер переноса недоступен при текущем состоянии загрузки."
 

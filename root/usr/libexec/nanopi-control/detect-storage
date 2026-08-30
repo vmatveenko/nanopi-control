@@ -7,6 +7,7 @@ MOUNTINFO="${NANOPI_CONTROL_MOUNTINFO:-/proc/self/mountinfo}"
 SYSINFO_DIR="${NANOPI_CONTROL_SYSINFO_DIR:-/tmp/sysinfo}"
 VERSION_FILE="${NANOPI_CONTROL_VERSION_FILE:-/usr/share/nanopi-control/version}"
 STATE_FILE="${NANOPI_CONTROL_STATE_FILE:-/etc/nanopi-control/migration-state.json}"
+STATE_MOUNT="${NANOPI_CONTROL_STATE_MOUNT:-$RUNTIME_DIR/emmc-state}"
 
 . /usr/share/libubox/jshn.sh
 
@@ -88,20 +89,63 @@ if [ "$supported" -eq 1 ] && [ "$boot_medium" = "sd" ] && [ -n "$internal_device
 	transfer_available=1
 fi
 
+normalize_stage() {
+	case "$1" in
+		target_prepared) printf '%s' 'copy_completed' ;;
+		completed) printf '%s' 'expansion_completed' ;;
+		copy_completed|boot_confirmed|partition_expanded_reboot_required|expansion_completed) printf '%s' "$1" ;;
+		*) printf '%s' 'not_started' ;;
+	esac
+}
+
+read_stage_file() {
+	local stage
+	stage="$(jsonfilter -i "$1" -e '@.stage' 2>/dev/null)"
+	normalize_stage "$stage"
+}
+
 migration_stage="not_started"
-if [ -r "$STATE_FILE" ]; then
-	migration_stage="$(jsonfilter -i "$STATE_FILE" -e '@.stage' 2>/dev/null)"
-	[ -n "$migration_stage" ] || migration_stage="not_started"
+if [ -n "${NANOPI_CONTROL_STATE_FILE:-}" ]; then
+	[ -r "$STATE_FILE" ] && migration_stage="$(read_stage_file "$STATE_FILE")"
+elif [ "$boot_medium" = "emmc" ] && [ "${root_disk:+/dev/$root_disk}" = "$internal_device" ]; then
+	[ -r "$STATE_FILE" ] && migration_stage="$(read_stage_file "$STATE_FILE")"
+elif [ "$boot_medium" = "sd" ] && [ -n "$internal_device" ]; then
+	internal_partition="${internal_device}p2"
+	internal_mount="$(awk -v device="$internal_partition" '$1 == device { print $2; exit }' /proc/mounts 2>/dev/null)"
+	temporary_mount=0
+	if [ -z "$internal_mount" ] && [ -b "$internal_partition" ]; then
+		mkdir -p "$STATE_MOUNT"
+		if mount -t ext4 -o ro,noload "$internal_partition" "$STATE_MOUNT" >/dev/null 2>&1; then
+			internal_mount="$STATE_MOUNT"
+			temporary_mount=1
+		fi
+	fi
+	if [ -n "$internal_mount" ] && [ -r "$internal_mount$STATE_FILE" ]; then
+		migration_stage="$(read_stage_file "$internal_mount$STATE_FILE")"
+	fi
+	if [ "$temporary_mount" -eq 1 ]; then
+		umount "$STATE_MOUNT" >/dev/null 2>&1 || true
+	fi
 fi
+
+boot_confirm_available=0
+[ "$migration_stage:$boot_medium" = "copy_completed:emmc" ] && boot_confirm_available=1
 
 expand_available=0
 case "$migration_stage:$boot_medium" in
-	target_prepared:emmc|partition_expanded_reboot_required:emmc)
+	boot_confirmed:emmc|partition_expanded_reboot_required:emmc)
 		expand_available=1
 		;;
 esac
 
-if [ "$transfer_available" -eq 1 ] || [ "$expand_available" -eq 1 ]; then
+transfer_tab_available=0
+if [ "$supported" -eq 1 ] && [ -n "$internal_device" ]; then
+	if [ "$boot_medium" = "sd" ] || { [ "$boot_medium" = "emmc" ] && [ "$migration_stage" != "expansion_completed" ]; }; then
+		transfer_tab_available=1
+	fi
+fi
+
+if [ "$transfer_tab_available" -eq 1 ]; then
 	: > "$RUNTIME_DIR/show-transfer"
 else
 	rm -f "$RUNTIME_DIR/show-transfer"
@@ -132,6 +176,8 @@ json_add_int internal_size "$internal_size"
 json_add_string sd_device "$sd_device"
 json_add_int sd_size "$sd_size"
 json_add_boolean transfer_available "$transfer_available"
+json_add_boolean transfer_tab_available "$transfer_tab_available"
+json_add_boolean boot_confirm_available "$boot_confirm_available"
 json_add_boolean expand_available "$expand_available"
 json_add_string migration_stage "$migration_stage"
 

@@ -74,13 +74,28 @@ assert_json "$emmc_result" '@.supported' 'true'
 assert_json "$emmc_result" '@.boot_medium' 'emmc'
 assert_json "$emmc_result" '@.root_device' '/dev/mmcblk1'
 assert_json "$emmc_result" '@.transfer_available' 'false'
+[ -f "$TEST_DIR/runtime/show-transfer" ]
+
+printf '%s\n' '{ "stage": "copy_completed", "source": "/dev/mmcblk0", "target": "/dev/mmcblk1" }' > "$TEST_DIR/migration-state.json"
+copied_result="$(run_detect)"
+assert_json "$copied_result" '@.boot_confirm_available' 'true'
+assert_json "$copied_result" '@.expand_available' 'false'
+
+printf '%s\n' '{ "stage": "boot_confirmed", "source": "/dev/mmcblk0", "target": "/dev/mmcblk1" }' > "$TEST_DIR/migration-state.json"
+expanded_result="$(run_detect)"
+assert_json "$expanded_result" '@.expand_available' 'true'
+assert_json "$expanded_result" '@.migration_stage' 'boot_confirmed'
+[ -f "$TEST_DIR/runtime/show-transfer" ]
+
+printf '%s\n' '{ "stage": "expansion_completed", "source": "/dev/mmcblk0", "target": "/dev/mmcblk1" }' > "$TEST_DIR/migration-state.json"
+completed_result="$(run_detect)"
+assert_json "$completed_result" '@.migration_stage' 'expansion_completed'
 [ ! -e "$TEST_DIR/runtime/show-transfer" ]
 
-printf '%s\n' '{ "stage": "target_prepared", "source": "/dev/mmcblk0", "target": "/dev/mmcblk1" }' > "$TEST_DIR/migration-state.json"
-expanded_result="$(run_detect)"
-assert_json "$expanded_result" '@.boot_medium' 'emmc'
-assert_json "$expanded_result" '@.expand_available' 'true'
-assert_json "$expanded_result" '@.migration_stage' 'target_prepared'
+printf '%s\n' '17 1 179:2 / / rw,noatime - ext4 /dev/root rw' > "$TEST_DIR/mountinfo"
+completed_from_sd_result="$(run_detect)"
+assert_json "$completed_from_sd_result" '@.migration_stage' 'expansion_completed'
+assert_json "$completed_from_sd_result" '@.transfer_tab_available' 'true'
 [ -f "$TEST_DIR/runtime/show-transfer" ]
 
 printf '%s\n' 'All storage detection tests passed.'

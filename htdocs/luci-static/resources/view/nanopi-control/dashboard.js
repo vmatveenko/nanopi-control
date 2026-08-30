@@ -1,4 +1,5 @@
 'use strict';
+// NanoPi Control system overview.
 'require view';
 'require rpc';
 'require ui';
@@ -200,16 +201,6 @@ return view.extend({
 			badge(_('System partition'), formatBytes(rootBytes), _('Available: %s').format(formatBytes(freeBytes)), '#0066cc'),
 			badge(_('Transfer'), transferReady ? _('Available') : expansionReady ? _('Continue') : _('Not required'), transferReady ? _('The system is running from an SD card') : expansionReady ? _('Internal storage expansion is pending') : _('The system is not running from an SD card'), transferReady || expansionReady ? '#d97706' : '#16803a')
 		]));
-
-		if (transferReady || expansionReady) {
-			root.appendChild(E('div', { 'class': 'cbi-section' }, [
-				E('p', {}, transferReady ? _('The system is running from an SD card and can be prepared for transfer to internal eMMC.') : _('The system is running from eMMC and is ready for final storage expansion.')),
-				E('a', {
-					'href': L.url('admin/services/nanopi-control/transfer'),
-					'class': 'btn cbi-button cbi-button-action important'
-				}, _('Open transfer assistant'))
-			]));
-		}
 
 		root.appendChild(E('h3', {}, _('System information')));
 		root.appendChild(table([

@@ -142,7 +142,7 @@ transfer() {
 	chmod 1777 "$TARGET_MOUNT/tmp"
 
 	target_state="$TARGET_MOUNT$STATE_FILE"
-	write_persistent_state "$target_state" target_prepared "$source" "$target"
+	write_persistent_state "$target_state" copy_verifying "$source" "$target"
 	[ -x "$TARGET_MOUNT/usr/libexec/nanopi-control/detect-storage" ] || fail "NanoPi Control was not copied to eMMC"
 	[ -r "$TARGET_MOUNT/etc/openwrt_release" ] || fail "OpenWrt release information is missing on eMMC"
 	sync
@@ -152,10 +152,34 @@ transfer() {
 	TARGET_MOUNTED=0
 	e2fsck -fn "$target_p2" >/dev/null 2>&1 || fail "Target filesystem check failed"
 
-	write_persistent_state "$STATE_FILE" target_prepared "$source" "$target"
+	write_job save_state 94 1 0 "Saving completed copy state on eMMC" ""
+	mount "$target_p2" "$TARGET_MOUNT" || fail "Unable to remount verified target filesystem"
+	TARGET_MOUNTED=1
+	write_persistent_state "$TARGET_MOUNT$STATE_FILE" copy_completed "$source" "$target"
+	sync
+	umount "$TARGET_MOUNT" || fail "Unable to unmount verified target filesystem"
+	TARGET_MOUNTED=0
+
+	rm -f "$STATE_FILE"
 	$DETECT >/dev/null 2>&1 || true
 	rm -f /tmp/luci-indexcache
 	write_job complete 100 0 1 "Transfer completed. Power off the NanoPi, remove the SD card and boot from eMMC." ""
+	FINISHED=1
+}
+
+confirm_boot() {
+	local status source disk
+
+	write_job verify_boot_device 20 1 0 "Verifying that OpenWrt is running from internal eMMC" ""
+	status="$($DETECT --json)" || fail "Unable to read storage status"
+	[ "$(jsonfilter -s "$status" -e '@.boot_confirm_available')" = "true" ] || fail "Boot confirmation is not available"
+	disk="$(jsonfilter -s "$status" -e '@.root_device')"
+	source="$(jsonfilter -i "$STATE_FILE" -e '@.source' 2>/dev/null)"
+
+	write_persistent_state "$STATE_FILE" boot_confirmed "$source" "$disk"
+	$DETECT >/dev/null 2>&1 || true
+	rm -f /tmp/luci-indexcache
+	write_job boot_confirmed 100 0 1 "Boot from internal eMMC was confirmed." ""
 	FINISHED=1
 }
 
@@ -203,7 +227,7 @@ expand() {
 	write_job expand_filesystem 70 1 0 "Expanding the ext4 filesystem" ""
 	resize2fs "$partition" || fail "Unable to expand ext4 filesystem"
 	sync
-	write_persistent_state "$STATE_FILE" completed "$source" "$disk"
+	write_persistent_state "$STATE_FILE" expansion_completed "$source" "$disk"
 	$DETECT >/dev/null 2>&1 || true
 	rm -f /tmp/luci-indexcache
 	write_job complete 100 0 1 "Internal storage expansion completed." ""
@@ -246,6 +270,7 @@ erase() {
 
 case "$MODE" in
 	transfer) transfer ;;
+	confirm_boot) confirm_boot ;;
 	expand) expand ;;
 	erase) erase ;;
 	*) fail "Unknown worker mode" ;;

@@ -168,6 +168,18 @@ case "$1" in
 		fi
 		start_worker expand
 		;;
+	confirm_boot)
+		status="$($DETECT --json)"
+		if [ "$(jsonfilter -s "$status" -e '@.boot_confirm_available')" != "true" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Boot confirmation is not available in the current state" }'
+			exit 1
+		fi
+		if [ "$2" != "CONFIRM_BOOT" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Boot confirmation is invalid" }'
+			exit 1
+		fi
+		start_worker confirm_boot
+		;;
 	erase)
 		status="$($DETECT --json)"
 		target="$(jsonfilter -s "$status" -e '@.internal_device')"

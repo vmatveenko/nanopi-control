@@ -1,5 +1,5 @@
 'use strict';
-// NanoPi Control: SD to eMMC migration and eMMC maintenance.
+// NanoPi Control: persistent SD to eMMC migration workflow.
 'require view';
 'require rpc';
 'require ui';
@@ -9,6 +9,9 @@ const callPreflight = rpc.declare({ object: 'nanopi-control', method: 'migration
 const callMigrationStatus = rpc.declare({ object: 'nanopi-control', method: 'migration_status', expect: {} });
 const callMigrationStart = rpc.declare({
 	object: 'nanopi-control', method: 'migration_start', params: [ 'confirmation' ], expect: {}
+});
+const callMigrationConfirmBoot = rpc.declare({
+	object: 'nanopi-control', method: 'migration_confirm_boot', params: [ 'confirmation' ], expect: {}
 });
 const callMigrationExpand = rpc.declare({
 	object: 'nanopi-control', method: 'migration_expand', params: [ 'confirmation' ], expect: {}
@@ -38,15 +41,16 @@ function checkRow(ok, title, detail) {
 	]);
 }
 
-function step(number, title, description, state) {
+function step(number, title, description, state, action) {
 	let color = state === 'done' ? '#16803a' : state === 'active' ? '#0066cc' : '#ddd';
 	return E('div', {
-		'style': 'border:1px solid %s;border-radius:5px;padding:15px;min-height:110px'.format(color)
+		'style': 'border:1px solid %s;border-radius:5px;padding:15px;min-height:190px;height:100%%;box-sizing:border-box;display:flex;flex-direction:column'.format(color)
 	}, [
 		E('div', { 'style': 'font-size:13px;color:#666' }, _('Step %d').format(number)),
 		E('div', { 'style': 'font-size:18px;font-weight:bold;margin:6px 0;color:%s'.format(state === 'done' ? '#16803a' : '#333') },
 			(state === 'done' ? '✓ ' : '') + title),
-		E('div', { 'style': 'color:#666' }, description)
+		E('div', { 'style': 'color:#666;flex:1' }, description),
+		E('div', { 'style': 'min-height:38px;margin-top:12px;display:flex;align-items:flex-end' }, action || '')
 	]);
 }
 
@@ -89,9 +93,50 @@ return view.extend({
 		const onSd = !!status.transfer_available;
 		const canExpand = !!status.expand_available;
 		const migrationStage = status.migration_stage || 'not_started';
-		const copied = canExpand || migrationStage === 'target_prepared' ||
-			migrationStage === 'partition_expanded_reboot_required' || migrationStage === 'completed';
+		const copied = migrationStage === 'copy_completed' || migrationStage === 'boot_confirmed' ||
+			migrationStage === 'partition_expanded_reboot_required' || migrationStage === 'expansion_completed';
+		const bootConfirmed = migrationStage === 'boot_confirmed' ||
+			migrationStage === 'partition_expanded_reboot_required' || migrationStage === 'expansion_completed';
+		const expansionCompleted = migrationStage === 'expansion_completed';
 		const preflightPassed = onSd && !!preflight.ready;
+
+		let confirmBootButton = null;
+		if (status.boot_confirm_available) {
+			confirmBootButton = E('button', {
+				'class': 'btn cbi-button cbi-button-positive important'
+			}, _('Confirm boot from eMMC'));
+			confirmBootButton.disabled = !!job.running;
+			confirmBootButton.addEventListener('click', ui.createHandlerFn(this, function() {
+				confirmBootButton.disabled = true;
+				return callMigrationConfirmBoot('CONFIRM_BOOT').then(function(result) {
+					if (!result.accepted)
+						throw new Error(result.error || _('Unable to confirm eMMC boot'));
+					window.location.reload();
+				}).catch(function(error) {
+					ui.addNotification(null, E('p', {}, error.message), 'error');
+					confirmBootButton.disabled = false;
+				});
+			}));
+		}
+
+		let expandButton = null;
+		if (canExpand) {
+			expandButton = E('button', {
+				'class': 'btn cbi-button cbi-button-positive important'
+			}, _('Expand internal storage'));
+			expandButton.disabled = !!job.running;
+			expandButton.addEventListener('click', ui.createHandlerFn(this, function() {
+				expandButton.disabled = true;
+				return callMigrationExpand('EXPAND').then(function(result) {
+					if (!result.accepted)
+						throw new Error(result.error || _('Unable to start expansion'));
+					window.location.reload();
+				}).catch(function(error) {
+					ui.addNotification(null, E('p', {}, error.message), 'error');
+					expandButton.disabled = false;
+				});
+			}));
+		}
 
 		const root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('SD to eMMC')),
@@ -100,12 +145,12 @@ return view.extend({
 		]);
 
 		root.appendChild(E('div', {
-			'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin:18px 0'
+			'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin:18px 0;align-items:stretch'
 		}, [
 			step(1, _('Preflight check'), _('Verify the board, source system and target eMMC.'), preflightPassed || copied ? 'done' : onSd ? 'active' : 'pending'),
 			step(2, _('Copy system'), _('Prepare eMMC and transfer the current OpenWrt state.'), copied ? 'done' : preflightPassed ? 'active' : 'pending'),
-			step(3, _('Boot from eMMC'), _('Power off, remove the SD card and start the device.'), canExpand || status.migration_stage === 'completed' ? 'done' : copied ? 'active' : 'pending'),
-			step(4, _('Expand partition'), _('Use all available internal storage after verification.'), status.migration_stage === 'completed' ? 'done' : canExpand ? 'active' : 'pending')
+			step(3, _('Boot from eMMC'), _('Power off, remove the SD card, boot from eMMC and confirm it here.'), bootConfirmed ? 'done' : copied ? 'active' : 'pending', confirmBootButton),
+			step(4, _('Expand partition'), _('Use all available internal storage after boot confirmation.'), expansionCompleted ? 'done' : bootConfirmed ? 'active' : 'pending', expandButton)
 		]));
 
 		const jobContainer = E('div');
@@ -115,40 +160,6 @@ return view.extend({
 			if (job.running)
 				this.pollJob(jobContainer);
 		}
-
-		const eraseTarget = status.internal_device || '';
-		const eraseAllowed = !!eraseTarget && status.root_device !== eraseTarget && !job.running;
-		const eraseConfirmation = E('input', {
-			'class': 'cbi-input-text',
-			'placeholder': eraseTarget || '/dev/mmcblkX',
-			'autocomplete': 'off'
-		});
-		const eraseButton = E('button', {
-			'class': 'btn cbi-button cbi-button-negative important',
-			'disabled': true
-		}, _('Erase eMMC'));
-		eraseConfirmation.addEventListener('input', function() {
-			eraseButton.disabled = !eraseAllowed || eraseConfirmation.value !== eraseTarget;
-		});
-		eraseButton.addEventListener('click', ui.createHandlerFn(this, function() {
-			eraseButton.disabled = true;
-			return callMigrationErase(eraseConfirmation.value).then(function(result) {
-				if (!result.accepted)
-					throw new Error(result.error || _('Unable to erase eMMC'));
-				window.location.reload();
-			}).catch(function(error) {
-				ui.addNotification(null, E('p', {}, error.message), 'error');
-			});
-		}));
-
-		root.appendChild(E('h3', {}, _('eMMC maintenance')));
-		root.appendChild(E('div', { 'class': 'cbi-section' }, [
-			E('p', {}, _('Erase all partitions and filesystem signatures from %s and reset the SD to eMMC assistant.').format(eraseTarget || _('internal eMMC'))),
-			!eraseAllowed ? E('div', { 'class': 'alert-message warning' },
-				status.root_device === eraseTarget ? _('The active system device cannot be erased. Boot from the SD card first.') : _('Internal eMMC is unavailable or another storage operation is running.')) : '',
-			E('p', {}, _('To confirm erasing the internal storage, enter its device name exactly: %s').format(eraseTarget || '-')),
-			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ eraseConfirmation, eraseButton ])
-		]));
 
 		if (onSd) {
 			root.appendChild(E('div', { 'class': 'alert-message warning' }, [
@@ -176,9 +187,14 @@ return view.extend({
 				'class': 'btn cbi-button cbi-button-negative important',
 				'disabled': true
 			}, _('Erase eMMC and start transfer'));
+			const eraseButton = E('button', {
+				'class': 'btn cbi-button cbi-button-negative important',
+				'disabled': true
+			}, _('Erase eMMC'));
 
 			confirmation.addEventListener('input', function() {
-				startButton.disabled = !preflight.ready || confirmation.value !== preflight.target;
+				startButton.disabled = !preflight.ready || confirmation.value !== preflight.target || !!job.running;
+				eraseButton.disabled = confirmation.value !== preflight.target || !!job.running;
 			});
 			startButton.addEventListener('click', ui.createHandlerFn(this, function() {
 				startButton.disabled = true;
@@ -190,37 +206,26 @@ return view.extend({
 					ui.addNotification(null, E('p', {}, error.message), 'error');
 				});
 			}));
+			eraseButton.addEventListener('click', ui.createHandlerFn(this, function() {
+				eraseButton.disabled = true;
+				return callMigrationErase(confirmation.value).then(function(result) {
+					if (!result.accepted)
+						throw new Error(result.error || _('Unable to erase eMMC'));
+					window.location.reload();
+				}).catch(function(error) {
+					ui.addNotification(null, E('p', {}, error.message), 'error');
+					eraseButton.disabled = false;
+				});
+			}));
 
 			root.appendChild(E('div', { 'class': 'cbi-section' }, [
 				E('p', {}, _('To confirm erasing the internal storage, enter its device name exactly: %s').format(preflight.target || '-')),
-				E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ confirmation, startButton ]),
+				E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ confirmation, startButton, eraseButton ]),
 				E('p', { 'style': 'color:#666;margin-top:12px' },
 					_('After successful copying, shut the NanoPi down, remove the SD card and boot it again. Do not erase the SD card until eMMC boot is verified.'))
 			]));
 		}
-		else if (canExpand) {
-			const expandButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important'
-			}, _('Expand internal storage'));
-			expandButton.addEventListener('click', ui.createHandlerFn(this, function() {
-				expandButton.disabled = true;
-				return callMigrationExpand('EXPAND').then(function(result) {
-					if (!result.accepted)
-						throw new Error(result.error || _('Unable to start expansion'));
-					window.location.reload();
-				}).catch(function(error) {
-					ui.addNotification(null, E('p', {}, error.message), 'error');
-				});
-			}));
-
-			root.appendChild(E('div', { 'class': 'alert-message success' },
-				_('OpenWrt is now running from internal eMMC. The copied system has been verified and is ready for the final expansion step.')));
-			root.appendChild(E('div', { 'class': 'cbi-section' }, [
-				E('p', {}, _('This operation extends partition 2 and its ext4 filesystem to all available eMMC space.')),
-				expandButton
-			]));
-		}
-		else {
+		else if (!status.boot_confirm_available && !canExpand && !expansionCompleted) {
 			root.appendChild(E('div', { 'class': 'alert-message warning' },
 				_('The transfer assistant is not available in the current boot state.')));
 		}

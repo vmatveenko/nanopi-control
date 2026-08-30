@@ -15,7 +15,8 @@ self-updates from GitHub Releases.
 - reliable detection of the actual root block device through
   `/proc/self/mountinfo` and `/sys/dev/block`;
 - distinction between removable SD and internal eMMC boot;
-- an always-visible **SD to eMMC** tab with migration and eMMC maintenance;
+- an **SD to eMMC** tab shown on every SD boot and until migration is fully
+  completed when running from eMMC;
 - safe eMMC erasure while booted from SD, including migration-state reset;
 - offline copy of the current OpenWrt installation, packages, configuration and
   NanoPi Control itself;
@@ -123,26 +124,33 @@ Docker storage is deliberately rejected by the preflight check.
 4. Open **Services → NanoPi Control → SD to eMMC**.
 5. Confirm that every preflight check is green.
 6. Enter the displayed target device name, normally `/dev/mmcblk1`.
-7. Start the transfer and wait until the progress reaches 100%.
+7. Start the transfer and wait until the progress reaches 100%. The copied
+   eMMC system stores the `copy_completed` state.
 8. Shut the NanoPi down. Do not reboot while copying is in progress.
 9. Remove the SD card and start the NanoPi again.
-10. Open NanoPi Control. The transfer tab remains visible because expansion is
-    pending.
-11. Verify that the overview reports **Internal eMMC**, then select
-    **Expand internal storage**.
+10. Open NanoPi Control. In step 3 select **Confirm boot from eMMC**. The module
+    verifies the active root device and stores `boot_confirmed` on eMMC.
+11. In the step 4 card select **Expand internal storage**.
 12. If the kernel asks for one intermediate reboot, reboot and return to the
     transfer page to finish ext4 expansion.
-13. Keep the SD card unchanged until normal networking and LuCI access from
+13. Successful expansion stores `expansion_completed`; the transfer tab then
+    disappears while running from eMMC.
+14. Keep the SD card unchanged until normal networking and LuCI access from
     eMMC have been confirmed.
 
 ### Erasing eMMC and resetting the assistant
 
-The **SD to eMMC** page always contains an **Erase eMMC** block. When OpenWrt
-is running from the SD card, enter the exact internal device name shown by the
-page and start the operation. It removes partition and filesystem signatures
-from the beginning and end of eMMC and deletes the saved migration state, so
-the assistant returns to step 1. The operation is rejected when eMMC is the
+When OpenWrt is running from the SD card, the **SD to eMMC** page offers one
+device confirmation field and two actions: **Erase eMMC and start transfer**
+and **Erase eMMC**. Both require the exact internal device name. Erasing removes
+partition and filesystem signatures and the migration state, so the assistant
+returns to the live preflight step. The operation is rejected when eMMC is the
 active system device or any of its partitions is mounted.
+
+Migration state is stored on eMMC. When booted from SD, NanoPi Control mounts
+the eMMC root filesystem read-only just long enough to read this state. This is
+why a completed eMMC still shows all four completed stages after booting the
+recovery SD card, while the tab stays hidden after a completed eMMC boot.
 
 The first-stage target root partition is intentionally created with only the
 space needed for the current installation plus a safety margin. The final step
