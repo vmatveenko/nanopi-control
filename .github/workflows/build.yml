@@ -29,7 +29,7 @@ jobs:
         env:
           ARCH: aarch64_generic-25.12.5
           FEED_DIR: ${{ runner.temp }}/nanopi-control-feed
-          PACKAGES: luci-app-nanopi-control luci-i18n-nanopi-control-ru
+          PACKAGES: luci-app-nanopi-control
           BUILD_LOG: 1
           V: s
 
