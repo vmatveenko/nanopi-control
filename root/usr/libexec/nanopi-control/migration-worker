@@ -210,8 +210,43 @@ expand() {
 	FINISHED=1
 }
 
+erase() {
+	local status target root target_name target_sectors tail_start
+
+	write_job verify_target 5 1 0 "Verifying the internal eMMC target" ""
+	status="$($DETECT --json)" || fail "Unable to read storage status"
+	target="$(jsonfilter -s "$status" -e '@.internal_device')"
+	root="$(jsonfilter -s "$status" -e '@.root_device')"
+	[ -n "$target" ] && [ -b "$target" ] || fail "Internal eMMC is unavailable"
+	[ "$target" != "$root" ] || fail "The active system device cannot be erased"
+	if awk -v target="$target" '$1 ~ ("^" target "p?[0-9]*$") { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+		fail "A target eMMC partition is mounted"
+	fi
+
+	target_name="${target##*/}"
+	target_sectors="$(cat "/sys/class/block/$target_name/size" 2>/dev/null)"
+	case "$target_sectors" in ''|*[!0-9]*) fail "Unable to read eMMC capacity" ;; esac
+	[ "$target_sectors" -gt 65536 ] || fail "Reported eMMC capacity is invalid"
+
+	write_job erase_head 20 1 0 "Erasing eMMC partition table and filesystem signatures" ""
+	dd if=/dev/zero of="$target" bs=512 count=32768 conv=fsync >/dev/null 2>&1 || fail "Unable to erase the beginning of eMMC"
+
+	write_job erase_tail 65 1 0 "Erasing backup partition metadata" ""
+	tail_start="$((target_sectors - 32768))"
+	dd if=/dev/zero of="$target" bs=512 seek="$tail_start" count=32768 conv=fsync >/dev/null 2>&1 || fail "Unable to erase the end of eMMC"
+	sync
+	partprobe "$target" >/dev/null 2>&1 || true
+
+	rm -f "$STATE_FILE"
+	$DETECT >/dev/null 2>&1 || true
+	rm -f /tmp/luci-indexcache
+	write_job erased 100 0 1 "Internal eMMC was erased and the SD to eMMC assistant was reset." ""
+	FINISHED=1
+}
+
 case "$MODE" in
 	transfer) transfer ;;
 	expand) expand ;;
+	erase) erase ;;
 	*) fail "Unknown worker mode" ;;
 esac

@@ -10,7 +10,7 @@
 		},
 		"write": {
 			"ubus": {
-				"nanopi-control": [ "migration_start", "migration_expand", "update_start" ]
+				"nanopi-control": [ "migration_start", "migration_expand", "migration_erase", "update_start" ]
 			}
 		}
 	}

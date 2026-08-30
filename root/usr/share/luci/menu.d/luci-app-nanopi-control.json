@@ -21,17 +21,14 @@
 		}
 	},
 	"admin/services/nanopi-control/transfer": {
-		"title": "Transfer to internal storage",
+		"title": "SD to eMMC",
 		"order": 2,
 		"action": {
 			"type": "view",
-			"path": "nanopi-control/transfer"
+			"path": "nanopi-control/sd-to-emmc"
 		},
 		"depends": {
-			"acl": [ "luci-app-nanopi-control" ],
-			"fs": {
-				"/tmp/nanopi-control/show-transfer": "file"
-			}
+			"acl": [ "luci-app-nanopi-control" ]
 		}
 	}
 }

@@ -1,4 +1,5 @@
 'use strict';
+// NanoPi Control: SD to eMMC migration and eMMC maintenance.
 'require view';
 'require rpc';
 'require ui';
@@ -11,6 +12,9 @@ const callMigrationStart = rpc.declare({
 });
 const callMigrationExpand = rpc.declare({
 	object: 'nanopi-control', method: 'migration_expand', params: [ 'confirmation' ], expect: {}
+});
+const callMigrationErase = rpc.declare({
+	object: 'nanopi-control', method: 'migration_erase', params: [ 'confirmation' ], expect: {}
 });
 
 function formatBytes(bytes) {
@@ -87,7 +91,7 @@ return view.extend({
 		const copied = canExpand || status.migration_stage === 'completed';
 
 		const root = E('div', { 'class': 'cbi-map' }, [
-			E('h2', {}, _('Transfer to internal storage')),
+			E('h2', {}, _('SD to eMMC')),
 			E('div', { 'class': 'cbi-map-descr' },
 				_('Transfer the current OpenWrt installation, settings and NanoPi Control from the SD card to internal eMMC without downloading another firmware image.'))
 		]);
@@ -108,6 +112,40 @@ return view.extend({
 			if (job.running)
 				this.pollJob(jobContainer);
 		}
+
+		const eraseTarget = status.internal_device || '';
+		const eraseAllowed = !!eraseTarget && status.root_device !== eraseTarget && !job.running;
+		const eraseConfirmation = E('input', {
+			'class': 'cbi-input-text',
+			'placeholder': eraseTarget || '/dev/mmcblkX',
+			'autocomplete': 'off'
+		});
+		const eraseButton = E('button', {
+			'class': 'btn cbi-button cbi-button-negative important',
+			'disabled': true
+		}, _('Erase eMMC'));
+		eraseConfirmation.addEventListener('input', function() {
+			eraseButton.disabled = !eraseAllowed || eraseConfirmation.value !== eraseTarget;
+		});
+		eraseButton.addEventListener('click', ui.createHandlerFn(this, function() {
+			eraseButton.disabled = true;
+			return callMigrationErase(eraseConfirmation.value).then(function(result) {
+				if (!result.accepted)
+					throw new Error(result.error || _('Unable to erase eMMC'));
+				window.location.reload();
+			}).catch(function(error) {
+				ui.addNotification(null, E('p', {}, error.message), 'error');
+			});
+		}));
+
+		root.appendChild(E('h3', {}, _('eMMC maintenance')));
+		root.appendChild(E('div', { 'class': 'cbi-section' }, [
+			E('p', {}, _('Erase all partitions and filesystem signatures from %s and reset the SD to eMMC assistant.').format(eraseTarget || _('internal eMMC'))),
+			!eraseAllowed ? E('div', { 'class': 'alert-message warning' },
+				status.root_device === eraseTarget ? _('The active system device cannot be erased. Boot from the SD card first.') : _('Internal eMMC is unavailable or another storage operation is running.')) : '',
+			E('p', {}, _('To confirm erasing the internal storage, enter its device name exactly: %s').format(eraseTarget || '-')),
+			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ eraseConfirmation, eraseButton ])
+		]));
 
 		if (onSd) {
 			root.appendChild(E('div', { 'class': 'alert-message warning' }, [
@@ -191,4 +229,3 @@ return view.extend({
 	handleSave: null,
 	handleReset: null
 });
-

@@ -15,8 +15,8 @@ self-updates from GitHub Releases.
 - reliable detection of the actual root block device through
   `/proc/self/mountinfo` and `/sys/dev/block`;
 - distinction between removable SD and internal eMMC boot;
-- a transfer tab shown while booted from SD and during a pending post-migration
-  expansion;
+- an always-visible **SD to eMMC** tab with migration and eMMC maintenance;
+- safe eMMC erasure while booted from SD, including migration-state reset;
 - offline copy of the current OpenWrt installation, packages, configuration and
   NanoPi Control itself;
 - verification of the copied boot partition and ext4 filesystem;
@@ -120,7 +120,7 @@ Docker storage is deliberately rejected by the preflight check.
 2. Boot NanoPi R5S from the card and configure LAN, internet and the root
    password.
 3. Install NanoPi Control using the release instructions above.
-4. Open **Services → NanoPi Control → Transfer to internal storage**.
+4. Open **Services → NanoPi Control → SD to eMMC**.
 5. Confirm that every preflight check is green.
 6. Enter the displayed target device name, normally `/dev/mmcblk1`.
 7. Start the transfer and wait until the progress reaches 100%.
@@ -134,6 +134,15 @@ Docker storage is deliberately rejected by the preflight check.
     transfer page to finish ext4 expansion.
 13. Keep the SD card unchanged until normal networking and LuCI access from
     eMMC have been confirmed.
+
+### Erasing eMMC and resetting the assistant
+
+The **SD to eMMC** page always contains an **Erase eMMC** block. When OpenWrt
+is running from the SD card, enter the exact internal device name shown by the
+page and start the operation. It removes partition and filesystem signatures
+from the beginning and end of eMMC and deletes the saved migration state, so
+the assistant returns to step 1. The operation is rejected when eMMC is the
+active system device or any of its partitions is mounted.
 
 The first-stage target root partition is intentionally created with only the
 space needed for the current installation plus a safety margin. The final step

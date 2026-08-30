@@ -6,7 +6,28 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 
 msgid "Transfer to internal storage"
-msgstr "Перенос во внутреннюю память"
+msgstr "SD to eMMC"
+
+msgid "SD to eMMC"
+msgstr "SD to eMMC"
+
+msgid "eMMC maintenance"
+msgstr "Обслуживание eMMC"
+
+msgid "Erase eMMC"
+msgstr "Очистить eMMC"
+
+msgid "Unable to erase eMMC"
+msgstr "Не удалось очистить eMMC"
+
+msgid "Erase all partitions and filesystem signatures from %s and reset the SD to eMMC assistant."
+msgstr "Удалить все разделы и сигнатуры файловых систем с %s и сбросить мастер SD to eMMC."
+
+msgid "The active system device cannot be erased. Boot from the SD card first."
+msgstr "Нельзя очистить устройство, с которого запущена система. Сначала загрузитесь с SD-карты."
+
+msgid "Internal eMMC is unavailable or another storage operation is running."
+msgstr "Внутренняя eMMC недоступна или уже выполняется другая операция с накопителем."
 
 msgid "NanoPi Control - Overview"
 msgstr "NanoPi Control — Обзор"

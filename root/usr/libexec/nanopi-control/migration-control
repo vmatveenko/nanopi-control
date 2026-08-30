@@ -168,6 +168,28 @@ case "$1" in
 		fi
 		start_worker expand
 		;;
+	erase)
+		status="$($DETECT --json)"
+		target="$(jsonfilter -s "$status" -e '@.internal_device')"
+		root="$(jsonfilter -s "$status" -e '@.root_device')"
+		if [ "$(jsonfilter -s "$status" -e '@.supported')" != "true" ] || [ -z "$target" ] || [ ! -b "$target" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Internal eMMC is unavailable" }'
+			exit 1
+		fi
+		if [ "$target" = "$root" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "The active system device cannot be erased" }'
+			exit 1
+		fi
+		if awk -v target="$target" '$1 ~ ("^" target "p?[0-9]*$") { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+			printf '%s\n' '{ "accepted": false, "error": "A target eMMC partition is mounted" }'
+			exit 1
+		fi
+		if [ "$2" != "$target" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Confirmation does not match target device" }'
+			exit 1
+		fi
+		start_worker erase
+		;;
 	*)
 		printf '%s\n' '{ "error": "Unknown migration command" }'
 		exit 1
