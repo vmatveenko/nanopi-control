@@ -17,13 +17,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Prepare OpenWrt package feed
+        shell: bash
+        run: |
+          feed_dir="${RUNNER_TEMP}/nanopi-control-feed/luci-app-nanopi-control"
+          mkdir -p "${feed_dir}"
+          cp -a Makefile LICENSE htdocs po root "${feed_dir}/"
+
       - name: Build with the official OpenWrt SDK action
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: aarch64_generic-25.12.5
-          # A feed contains package directories. Mount the checkout parent so
-          # this single-package repository appears as /feed/nanopi-control.
-          FEED_DIR: ${{ github.workspace }}/..
+          FEED_DIR: ${{ runner.temp }}/nanopi-control-feed
           PACKAGES: luci-app-nanopi-control luci-i18n-nanopi-control-ru
           BUILD_LOG: 1
           V: s
