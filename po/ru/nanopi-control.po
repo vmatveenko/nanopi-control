@@ -1,0 +1,169 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: NanoPi Control 0.1.0\n"
+"Language: ru\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Transfer to internal storage"
+msgstr "Перенос во внутреннюю память"
+
+msgid "NanoPi Control - Overview"
+msgstr "NanoPi Control — Обзор"
+
+msgid "Current information about the NanoPi, its boot source and internal storage."
+msgstr "Текущее состояние NanoPi, источник загрузки и внутренняя память."
+
+msgid "This device is not recognized as a FriendlyElec NanoPi R5S. Migration operations are unavailable."
+msgstr "Устройство не распознано как FriendlyElec NanoPi R5S. Операции переноса недоступны."
+
+msgid "Boot source"
+msgstr "Источник загрузки"
+
+msgid "SD card"
+msgstr "SD-карта"
+
+msgid "Internal eMMC"
+msgstr "Внутренняя eMMC"
+
+msgid "Non-removable MMC"
+msgstr "Несъёмная MMC"
+
+msgid "Internal storage"
+msgstr "Внутренняя память"
+
+msgid "Detected"
+msgstr "Обнаружена"
+
+msgid "Not detected"
+msgstr "Не обнаружена"
+
+msgid "System partition"
+msgstr "Системный раздел"
+
+msgid "Available: %s"
+msgstr "Доступно: %s"
+
+msgid "Transfer"
+msgstr "Перенос"
+
+msgid "Not required"
+msgstr "Не требуется"
+
+msgid "The system is running from an SD card"
+msgstr "Система загружена с SD-карты"
+
+msgid "The system is not running from an SD card"
+msgstr "Система загружена не с SD-карты"
+
+msgid "The system is running from an SD card and can be prepared for transfer to internal eMMC."
+msgstr "Система загружена с SD-карты и может быть подготовлена к переносу во внутреннюю eMMC."
+
+msgid "Open transfer assistant"
+msgstr "Открыть мастер переноса"
+
+msgid "System information"
+msgstr "Информация о системе"
+
+msgid "Board"
+msgstr "Плата"
+
+msgid "OpenWrt version"
+msgstr "Версия OpenWrt"
+
+msgid "Kernel version"
+msgstr "Версия ядра"
+
+msgid "NanoPi Control version"
+msgstr "Версия NanoPi Control"
+
+msgid "Active IPv4 addresses"
+msgstr "Активные IPv4-адреса"
+
+msgid "No active IPv4 addresses"
+msgstr "Нет активных IPv4-адресов"
+
+msgid "Storage information"
+msgstr "Информация о накопителях"
+
+msgid "Root device"
+msgstr "Системный накопитель"
+
+msgid "Root partition"
+msgstr "Системный раздел"
+
+msgid "Root filesystem"
+msgstr "Файловая система"
+
+msgid "Root partition size"
+msgstr "Размер системного раздела"
+
+msgid "Root partition available"
+msgstr "Свободно на системном разделе"
+
+msgid "Refresh"
+msgstr "Обновить"
+
+msgid "Offline assistant for transferring the current OpenWrt installation from an SD card to internal eMMC."
+msgstr "Автономный мастер переноса текущей установки OpenWrt с SD-карты во внутреннюю eMMC."
+
+msgid "Transfer is unavailable because the system is not running from an SD card or internal eMMC was not detected."
+msgstr "Перенос недоступен: система загружена не с SD-карты либо внутренняя eMMC не обнаружена."
+
+msgid "Return to overview"
+msgstr "Вернуться к обзору"
+
+msgid "Step %d"
+msgstr "Этап %d"
+
+msgid "Preflight check"
+msgstr "Предварительная проверка"
+
+msgid "Verify the board, source system and target eMMC."
+msgstr "Проверка платы, исходной системы и целевой eMMC."
+
+msgid "Copy system"
+msgstr "Копирование системы"
+
+msgid "Prepare eMMC and transfer the current OpenWrt state."
+msgstr "Подготовка eMMC и перенос текущего состояния OpenWrt."
+
+msgid "Boot from eMMC"
+msgstr "Загрузка с eMMC"
+
+msgid "Power off, remove the SD card and start the device."
+msgstr "Выключение, извлечение SD-карты и запуск устройства."
+
+msgid "Expand partition"
+msgstr "Расширение раздела"
+
+msgid "Use all available internal storage after verification."
+msgstr "Использование всей внутренней памяти после проверки."
+
+msgid "No changes are being made yet. "
+msgstr "Изменения пока не выполняются. "
+
+msgid "The current development version implements diagnostics and the assistant interface. Destructive copy operations will be enabled only after hardware-level tests."
+msgstr "Текущая версия реализует диагностику и интерфейс мастера. Операции копирования будут включены только после аппаратного тестирования."
+
+msgid "Readiness check"
+msgstr "Проверка готовности"
+
+msgid "Device model"
+msgstr "Модель устройства"
+
+msgid "Target storage"
+msgstr "Целевой накопитель"
+
+msgid "Filesystem"
+msgstr "Файловая система"
+
+msgid "Run check again"
+msgstr "Повторить проверку"
+
+msgid "Start transfer"
+msgstr "Начать перенос"
+
+msgid "Copy engine is not enabled in this version"
+msgstr "Механизм копирования ещё не включён в этой версии"
+

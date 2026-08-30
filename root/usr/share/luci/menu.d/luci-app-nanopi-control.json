@@ -1,0 +1,38 @@
+{
+	"admin/services/nanopi-control": {
+		"title": "NanoPi Control",
+		"order": 55,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ]
+		}
+	},
+	"admin/services/nanopi-control/overview": {
+		"title": "Overview",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "nanopi-control/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ]
+		}
+	},
+	"admin/services/nanopi-control/transfer": {
+		"title": "Transfer to internal storage",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "nanopi-control/transfer"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/tmp/nanopi-control/booted-from-sd": "file"
+			}
+		}
+	}
+}
+

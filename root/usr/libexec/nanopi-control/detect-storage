@@ -1,0 +1,129 @@
+#!/bin/sh
+
+RUNTIME_DIR="${NANOPI_CONTROL_RUNTIME_DIR:-/tmp/nanopi-control}"
+SYS_BLOCK="${NANOPI_CONTROL_SYS_BLOCK:-/sys/class/block}"
+SYS_DEV_BLOCK="${NANOPI_CONTROL_SYS_DEV_BLOCK:-/sys/dev/block}"
+MOUNTINFO="${NANOPI_CONTROL_MOUNTINFO:-/proc/self/mountinfo}"
+SYSINFO_DIR="${NANOPI_CONTROL_SYSINFO_DIR:-/tmp/sysinfo}"
+VERSION_FILE="${NANOPI_CONTROL_VERSION_FILE:-/usr/share/nanopi-control/version}"
+
+. /usr/share/libubox/jshn.sh
+
+read_one_line() {
+	[ -r "$1" ] && {
+		IFS= read -r value < "$1"
+		printf '%s' "$value"
+	}
+}
+
+size_bytes() {
+	local sectors
+	sectors="$(read_one_line "$SYS_BLOCK/$1/size")"
+	case "$sectors" in
+		''|*[!0-9]*) printf '0' ;;
+		*) printf '%s' "$((sectors * 512))" ;;
+	esac
+}
+
+mkdir -p "$RUNTIME_DIR"
+
+board_name="$(read_one_line "$SYSINFO_DIR/board_name")"
+model="$(read_one_line "$SYSINFO_DIR/model")"
+module_version="$(read_one_line "$VERSION_FILE")"
+
+root_line="$(awk '$5 == "/" { print; exit }' "$MOUNTINFO" 2>/dev/null)"
+root_devid="$(printf '%s\n' "$root_line" | awk '{ print $3 }')"
+root_fstype="$(printf '%s\n' "$root_line" | awk '{ for (i = 1; i <= NF; i++) if ($i == "-") { print $(i + 1); exit } }')"
+root_sys_path=""
+root_partition=""
+root_disk=""
+root_removable=""
+boot_medium="unknown"
+
+if [ -n "$root_devid" ] && [ -e "$SYS_DEV_BLOCK/$root_devid" ]; then
+	root_sys_path="$(readlink -f "$SYS_DEV_BLOCK/$root_devid" 2>/dev/null)"
+	root_partition="${root_sys_path##*/}"
+	root_parent="${root_sys_path%/*}"
+	root_disk="${root_parent##*/}"
+
+	case "$root_partition" in
+		mmcblk[0-9]) root_disk="$root_partition" ;;
+	esac
+
+	root_removable="$(read_one_line "$SYS_BLOCK/$root_disk/removable")"
+	case "$root_disk:$root_removable" in
+		mmcblk*:1) boot_medium="sd" ;;
+		mmcblk*:0)
+			if [ "$(read_one_line "$SYS_BLOCK/$root_disk/device/type")" = "MMC" ]; then
+				boot_medium="emmc"
+			else
+				boot_medium="mmc"
+			fi
+			;;
+	esac
+fi
+
+internal_device=""
+internal_size=0
+sd_device=""
+sd_size=0
+
+for disk_path in "$SYS_BLOCK"/mmcblk[0-9]; do
+	[ -e "$disk_path" ] || continue
+	disk="${disk_path##*/}"
+	removable="$(read_one_line "$disk_path/removable")"
+	type="$(read_one_line "$disk_path/device/type")"
+
+	if [ "$removable" = "0" ] && [ "$type" = "MMC" ]; then
+		internal_device="/dev/$disk"
+		internal_size="$(size_bytes "$disk")"
+	elif [ "$removable" = "1" ]; then
+		sd_device="/dev/$disk"
+		sd_size="$(size_bytes "$disk")"
+	fi
+done
+
+supported=0
+[ "$board_name" = "friendlyarm,nanopi-r5s" ] && supported=1
+
+transfer_available=0
+if [ "$supported" -eq 1 ] && [ "$boot_medium" = "sd" ] && [ -n "$internal_device" ]; then
+	transfer_available=1
+	: > "$RUNTIME_DIR/booted-from-sd"
+else
+	rm -f "$RUNTIME_DIR/booted-from-sd"
+fi
+
+root_total_kib=0
+root_used_kib=0
+root_available_kib=0
+set -- $(df -Pk / 2>/dev/null | awk 'NR == 2 { print $2, $3, $4 }')
+[ -n "$1" ] && root_total_kib="$1"
+[ -n "$2" ] && root_used_kib="$2"
+[ -n "$3" ] && root_available_kib="$3"
+
+json_init
+json_add_string module_version "${module_version:-unknown}"
+json_add_string board_name "${board_name:-unknown}"
+json_add_string model "${model:-unknown}"
+json_add_boolean supported "$supported"
+json_add_string boot_medium "$boot_medium"
+json_add_string root_device "${root_disk:+/dev/$root_disk}"
+json_add_string root_partition "${root_partition:+/dev/$root_partition}"
+json_add_string root_filesystem "${root_fstype:-unknown}"
+json_add_int root_total_kib "${root_total_kib:-0}"
+json_add_int root_used_kib "${root_used_kib:-0}"
+json_add_int root_available_kib "${root_available_kib:-0}"
+json_add_string internal_device "$internal_device"
+json_add_int internal_size "$internal_size"
+json_add_string sd_device "$sd_device"
+json_add_int sd_size "$sd_size"
+json_add_boolean transfer_available "$transfer_available"
+json_add_string migration_stage "not_started"
+
+output="$(json_dump)"
+tmp_status="$RUNTIME_DIR/status.json.tmp.$$"
+printf '%s\n' "$output" > "$tmp_status"
+mv "$tmp_status" "$RUNTIME_DIR/status.json"
+
+printf '%s\n' "$output"

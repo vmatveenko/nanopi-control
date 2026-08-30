@@ -1,0 +1,13 @@
+{
+	"luci-app-nanopi-control": {
+		"description": "Grant access to NanoPi Control status information",
+		"read": {
+			"ubus": {
+				"nanopi-control": [ "status" ],
+				"network.interface": [ "dump" ],
+				"system": [ "board", "info" ]
+			}
+		}
+	}
+}
+

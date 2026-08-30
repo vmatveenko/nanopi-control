@@ -1,0 +1,22 @@
+#!/bin/sh
+
+case "$1" in
+	list)
+		printf '%s\n' '{ "status": {} }'
+		;;
+	call)
+		case "$2" in
+			status)
+				exec /usr/libexec/nanopi-control/detect-storage --json
+				;;
+			*)
+				printf '%s\n' '{ "error": "Method not found" }'
+				exit 1
+				;;
+		esac
+		;;
+	*)
+		exit 1
+		;;
+esac
+

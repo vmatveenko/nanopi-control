@@ -1,0 +1,6 @@
+#!/bin/sh
+
+/etc/init.d/nanopi-control enable
+/etc/init.d/nanopi-control start
+exit 0
+
