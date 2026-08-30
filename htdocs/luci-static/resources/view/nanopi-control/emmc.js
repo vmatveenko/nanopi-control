@@ -1,5 +1,5 @@
 'use strict';
-// NanoPi Control: persistent SD to eMMC migration workflow.
+// NanoPi Control: persistent four-stage SD to eMMC workflow and actions.
 'require view';
 'require rpc';
 'require ui';
@@ -41,16 +41,33 @@ function checkRow(ok, title, detail) {
 	]);
 }
 
+function preflightReason(reason) {
+	switch (reason) {
+	case 'Ready': return _('Ready');
+	case 'Unsupported device': return _('Unsupported device');
+	case 'The system is not running from SD or eMMC is unavailable': return _('The system is not running from SD or eMMC is unavailable');
+	case 'Only ext4 installations are supported': return _('Only ext4 installations are supported');
+	case 'Source and target devices are invalid': return _('Source and target devices are invalid');
+	case 'Required system utilities are missing': return _('Required system utilities are missing');
+	case 'Unexpected OpenWrt partition layout': return _('Unexpected OpenWrt partition layout');
+	case 'Internal eMMC is too small for the current system': return _('Internal eMMC is too small for the current system');
+	case 'Docker data is stored on a separate mounted filesystem': return _('Docker data is stored on a separate mounted filesystem');
+	default: return reason || '-';
+	}
+}
+
 function step(number, title, description, state, action) {
 	let color = state === 'done' ? '#16803a' : state === 'active' ? '#0066cc' : '#ddd';
 	return E('div', {
-		'style': 'border:1px solid %s;border-radius:5px;padding:15px;min-height:190px;height:100%%;box-sizing:border-box;display:flex;flex-direction:column'.format(color)
+		'style': 'border:1px solid %s;border-radius:5px;padding:12px 14px;height:140px;box-sizing:border-box;display:flex;flex-direction:column'.format(color)
 	}, [
-		E('div', { 'style': 'font-size:13px;color:#666' }, _('Step %d').format(number)),
+		E('div', { 'style': 'min-height:32px;display:flex;justify-content:space-between;gap:8px;align-items:flex-start' }, [
+			E('div', { 'style': 'font-size:13px;color:#666;padding-top:6px' }, _('Step %d').format(number)),
+			action || ''
+		]),
 		E('div', { 'style': 'font-size:18px;font-weight:bold;margin:6px 0;color:%s'.format(state === 'done' ? '#16803a' : '#333') },
 			(state === 'done' ? '✓ ' : '') + title),
-		E('div', { 'style': 'color:#666;flex:1' }, description),
-		E('div', { 'style': 'min-height:38px;margin-top:12px;display:flex;align-items:flex-end' }, action || '')
+		E('div', { 'style': 'color:#666;line-height:1.35' }, description)
 	]);
 }
 
@@ -103,8 +120,9 @@ return view.extend({
 		let confirmBootButton = null;
 		if (status.boot_confirm_available) {
 			confirmBootButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important'
-			}, _('Confirm boot from eMMC'));
+				'class': 'btn cbi-button cbi-button-positive important',
+				'style': 'padding:4px 9px;min-height:28px'
+			}, _('Confirm'));
 			confirmBootButton.disabled = !!job.running;
 			confirmBootButton.addEventListener('click', ui.createHandlerFn(this, function() {
 				confirmBootButton.disabled = true;
@@ -122,8 +140,9 @@ return view.extend({
 		let expandButton = null;
 		if (canExpand) {
 			expandButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important'
-			}, _('Expand internal storage'));
+				'class': 'btn cbi-button cbi-button-positive important',
+				'style': 'padding:4px 9px;min-height:28px'
+			}, _('Expand'));
 			expandButton.disabled = !!job.running;
 			expandButton.addEventListener('click', ui.createHandlerFn(this, function() {
 				expandButton.disabled = true;
@@ -163,7 +182,7 @@ return view.extend({
 
 		if (onSd) {
 			root.appendChild(E('div', { 'class': 'alert-message warning' }, [
-				E('strong', {}, _('Warning: ')),
+				E('strong', {}, _('Warning:') + ' '),
 				_('All existing data on %s will be erased. The SD card is not modified and remains your recovery option.').format(preflight.target || status.internal_device || 'eMMC')
 			]));
 
@@ -173,9 +192,11 @@ return view.extend({
 				checkRow(status.boot_medium === 'sd', _('Boot source'), '%s · %s'.format(_('SD card'), status.root_partition || '-')),
 				checkRow(!!preflight.layout_ready, _('OpenWrt disk layout'), preflight.layout_ready ? _('Supported') : _('Unexpected layout')),
 				checkRow(!!preflight.commands_ready, _('Required utilities'), preflight.commands_ready ? _('Installed') : _('Missing packages')),
-				checkRow(!!preflight.docker_ready, _('Docker state'), preflight.docker_ready ? _('Ready') : _('Docker storage must not be mounted')),
+				checkRow(!!preflight.docker_ready, _('Docker state'),
+					preflight.docker_separate_mount ? _('Separate Docker storage is not supported') :
+					preflight.docker_installed ? _('Docker and its containers will be migrated; the service will be paused briefly') : _('Docker is not installed')),
 				checkRow(!!preflight.size_ready, _('Target capacity'), '%s · %s'.format(preflight.target || '-', formatBytes(preflight.target_size_bytes))),
-				checkRow(!!preflight.ready, _('Final result'), preflight.reason || '-')
+				checkRow(!!preflight.ready, _('Final result'), preflightReason(preflight.reason))
 			]));
 
 			const confirmation = E('input', {

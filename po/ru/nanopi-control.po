@@ -32,6 +32,24 @@ msgstr "Внутренняя eMMC недоступна или уже выпол�
 msgid "NanoPi Control - Overview"
 msgstr "NanoPi Control — Обзор"
 
+msgid "Overview"
+msgstr "Обзор"
+
+msgid "Information"
+msgstr "Информация"
+
+msgid "Model"
+msgstr "Модель"
+
+msgid "Memory"
+msgstr "Память"
+
+msgid "Available"
+msgstr "Доступно"
+
+msgid "Unknown"
+msgstr "Неизвестно"
+
 msgid "Current information about the NanoPi, its boot source and internal storage."
 msgstr "Текущее состояние NanoPi, источник загрузки и внутренняя память."
 
@@ -194,6 +212,33 @@ msgstr "Перенос текущей установки OpenWrt, настрое
 msgid "Warning: "
 msgstr "Внимание: "
 
+msgid "Warning:"
+msgstr "Внимание:"
+
+msgid "Unsupported device"
+msgstr "Неподдерживаемое устройство"
+
+msgid "The system is not running from SD or eMMC is unavailable"
+msgstr "Система загружена не с SD-карты или eMMC недоступна"
+
+msgid "Only ext4 installations are supported"
+msgstr "Поддерживаются только установки с ext4"
+
+msgid "Source and target devices are invalid"
+msgstr "Исходный и целевой накопители определены неправильно"
+
+msgid "Required system utilities are missing"
+msgstr "Отсутствуют необходимые системные утилиты"
+
+msgid "Unexpected OpenWrt partition layout"
+msgstr "Обнаружена неподдерживаемая разметка OpenWrt"
+
+msgid "Internal eMMC is too small for the current system"
+msgstr "Внутренняя eMMC слишком мала для текущей системы"
+
+msgid "Docker data is stored on a separate mounted filesystem"
+msgstr "Данные Docker находятся на отдельно смонтированной файловой системе"
+
 msgid "All existing data on %s will be erased. The SD card is not modified and remains your recovery option."
 msgstr "Все имеющиеся данные на %s будут удалены. SD-карта не изменяется и остаётся средством восстановления."
 
@@ -224,6 +269,15 @@ msgstr "Готово"
 msgid "Docker storage must not be mounted"
 msgstr "Хранилище Docker не должно быть смонтировано"
 
+msgid "Separate Docker storage is not supported"
+msgstr "Отдельно смонтированное хранилище Docker пока не поддерживается"
+
+msgid "Docker and its containers will be migrated; the service will be paused briefly"
+msgstr "Docker и контейнеры будут перенесены; сервис будет ненадолго остановлен"
+
+msgid "Docker is not installed"
+msgstr "Docker не установлен"
+
 msgid "Target capacity"
 msgstr "Объём целевого накопителя"
 
@@ -250,6 +304,12 @@ msgstr "Расширить внутреннюю память"
 
 msgid "Confirm boot from eMMC"
 msgstr "Подтвердить загрузку с eMMC"
+
+msgid "Confirm"
+msgstr "Подтвердить"
+
+msgid "Expand"
+msgstr "Расширить"
 
 msgid "Unable to confirm eMMC boot"
 msgstr "Не удалось подтвердить загрузку с eMMC"

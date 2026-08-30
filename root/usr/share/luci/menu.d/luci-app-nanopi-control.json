@@ -28,7 +28,7 @@
 		"order": 2,
 		"action": {
 			"type": "view",
-			"path": "nanopi-control/migration"
+			"path": "nanopi-control/emmc"
 		},
 		"depends": {
 			"acl": [ "luci-app-nanopi-control" ]

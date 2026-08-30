@@ -97,8 +97,14 @@ that is currently running from the SD card, including:
 - NanoPi Control and its migration state.
 
 Temporary filesystems (`/tmp`, `/run`, `/proc`, `/sys`, `/dev`) are not copied.
-The transfer must be performed before Docker is installed because mounted
-Docker storage is deliberately rejected by the preflight check.
+Docker, images, volumes and containers are migrated when Docker's data root is
+part of the SD root filesystem. NanoPi Control performs the initial copy while
+services remain available, briefly stops `dockerd` for the final synchronized
+copy and then starts it again on the SD system. A separately mounted
+`/opt/docker` is rejected because crossing that filesystem boundary would need
+a separate capacity calculation and copy plan. When Docker is installed, the
+temporary eMMC root partition also receives a 1 GiB free-space margin before
+the final expansion step.
 
 ### Safety model
 

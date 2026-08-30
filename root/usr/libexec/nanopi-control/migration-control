@@ -31,7 +31,8 @@ write_job() {
 preflight() {
 	local status source target source_disk target_disk
 	local p1_start p1_size p2_start target_sectors used_kib used_bytes
-	local initial_bytes initial_sectors p2_end commands_ready layout_ready size_ready docker_ready ready reason command
+	local initial_bytes initial_sectors safety_bytes p2_end commands_ready layout_ready size_ready
+	local docker_ready docker_installed docker_running docker_separate_mount ready reason command
 
 	status="$($DETECT --json)"
 	source="$(jsonfilter -s "$status" -e '@.root_device')"
@@ -48,7 +49,13 @@ preflight() {
 	case "$used_kib" in ''|*[!0-9]*) used_kib=0 ;; esac
 	case "$target_sectors" in ''|*[!0-9]*) target_sectors=0 ;; esac
 	used_bytes="$((used_kib * 1024))"
-	initial_bytes="$((used_bytes + 536870912))"
+	docker_installed=0
+	if [ -x /etc/init.d/dockerd ] || command -v docker >/dev/null 2>&1; then
+		docker_installed=1
+	fi
+	safety_bytes=536870912
+	[ "$docker_installed" -eq 1 ] && safety_bytes=1073741824
+	initial_bytes="$((used_bytes + safety_bytes))"
 	[ "$initial_bytes" -ge 1073741824 ] || initial_bytes=1073741824
 	initial_sectors="$(((initial_bytes + 511) / 512))"
 	p2_end="$((131072 + initial_sectors - 1))"
@@ -68,8 +75,18 @@ preflight() {
 		size_ready=1
 	fi
 
+	docker_running=0
+	pidof dockerd >/dev/null 2>&1 && docker_running=1
+	docker_separate_mount=0
+	awk '{
+		filesystem = ""
+		for (i = 1; i <= NF; i++)
+			if ($i == "-") { filesystem = $(i + 1); break }
+		if ($5 == "/opt/docker" || ($5 ~ /^\/opt\/docker\// && filesystem != "overlay"))
+			found = 1
+	} END { exit !found }' /proc/self/mountinfo 2>/dev/null && docker_separate_mount=1
 	docker_ready=1
-	awk '$5 == "/opt/docker" { found = 1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null && docker_ready=0
+	[ "$docker_separate_mount" -eq 1 ] && docker_ready=0
 
 	ready=1
 	reason="Ready"
@@ -88,7 +105,7 @@ preflight() {
 	elif [ "$size_ready" -ne 1 ]; then
 		ready=0; reason="Internal eMMC is too small for the current system"
 	elif [ "$docker_ready" -ne 1 ]; then
-		ready=0; reason="Docker storage is mounted; migrate before installing Docker"
+		ready=0; reason="Docker data is stored on a separate mounted filesystem"
 	fi
 
 	json_init
@@ -104,6 +121,9 @@ preflight() {
 	json_add_boolean layout_ready "$layout_ready"
 	json_add_boolean size_ready "$size_ready"
 	json_add_boolean docker_ready "$docker_ready"
+	json_add_boolean docker_installed "$docker_installed"
+	json_add_boolean docker_running "$docker_running"
+	json_add_boolean docker_separate_mount "$docker_separate_mount"
 	json_dump
 }
 
