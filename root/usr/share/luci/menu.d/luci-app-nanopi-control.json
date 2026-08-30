@@ -30,9 +30,8 @@
 		"depends": {
 			"acl": [ "luci-app-nanopi-control" ],
 			"fs": {
-				"/tmp/nanopi-control/booted-from-sd": "file"
+				"/tmp/nanopi-control/show-transfer": "file"
 			}
 		}
 	}
 }
-

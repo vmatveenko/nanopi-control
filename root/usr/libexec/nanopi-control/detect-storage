@@ -6,6 +6,7 @@ SYS_DEV_BLOCK="${NANOPI_CONTROL_SYS_DEV_BLOCK:-/sys/dev/block}"
 MOUNTINFO="${NANOPI_CONTROL_MOUNTINFO:-/proc/self/mountinfo}"
 SYSINFO_DIR="${NANOPI_CONTROL_SYSINFO_DIR:-/tmp/sysinfo}"
 VERSION_FILE="${NANOPI_CONTROL_VERSION_FILE:-/usr/share/nanopi-control/version}"
+STATE_FILE="${NANOPI_CONTROL_STATE_FILE:-/etc/nanopi-control/migration-state.json}"
 
 . /usr/share/libubox/jshn.sh
 
@@ -89,9 +90,25 @@ supported=0
 transfer_available=0
 if [ "$supported" -eq 1 ] && [ "$boot_medium" = "sd" ] && [ -n "$internal_device" ]; then
 	transfer_available=1
-	: > "$RUNTIME_DIR/booted-from-sd"
+fi
+
+migration_stage="not_started"
+if [ -r "$STATE_FILE" ]; then
+	migration_stage="$(jsonfilter -i "$STATE_FILE" -e '@.stage' 2>/dev/null)"
+	[ -n "$migration_stage" ] || migration_stage="not_started"
+fi
+
+expand_available=0
+case "$migration_stage:$boot_medium" in
+	target_prepared:emmc|partition_expanded_reboot_required:emmc)
+		expand_available=1
+		;;
+esac
+
+if [ "$transfer_available" -eq 1 ] || [ "$expand_available" -eq 1 ]; then
+	: > "$RUNTIME_DIR/show-transfer"
 else
-	rm -f "$RUNTIME_DIR/booted-from-sd"
+	rm -f "$RUNTIME_DIR/show-transfer"
 fi
 
 root_total_kib=0
@@ -119,7 +136,8 @@ json_add_int internal_size "$internal_size"
 json_add_string sd_device "$sd_device"
 json_add_int sd_size "$sd_size"
 json_add_boolean transfer_available "$transfer_available"
-json_add_string migration_stage "not_started"
+json_add_boolean expand_available "$expand_available"
+json_add_string migration_stage "$migration_stage"
 
 output="$(json_dump)"
 tmp_status="$RUNTIME_DIR/status.json.tmp.$$"

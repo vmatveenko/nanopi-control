@@ -2,12 +2,36 @@
 
 case "$1" in
 	list)
-		printf '%s\n' '{ "status": {} }'
+		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
 		;;
 	call)
+		payload="$(cat)"
 		case "$2" in
 			status)
 				exec /usr/libexec/nanopi-control/detect-storage --json
+				;;
+			migration_preflight)
+				exec /usr/libexec/nanopi-control/migration-control preflight
+				;;
+			migration_status)
+				exec /usr/libexec/nanopi-control/migration-control status
+				;;
+			migration_start)
+				confirmation="$(jsonfilter -s "$payload" -e '@.confirmation' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/migration-control start "$confirmation"
+				;;
+			migration_expand)
+				confirmation="$(jsonfilter -s "$payload" -e '@.confirmation' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/migration-control expand "$confirmation"
+				;;
+			update_check)
+				exec /usr/libexec/nanopi-control/update-control check
+				;;
+			update_status)
+				exec /usr/libexec/nanopi-control/update-control status
+				;;
+			update_start)
+				exec /usr/libexec/nanopi-control/update-control start
 				;;
 			*)
 				printf '%s\n' '{ "error": "Method not found" }'
@@ -19,4 +43,3 @@ case "$1" in
 		exit 1
 		;;
 esac
-

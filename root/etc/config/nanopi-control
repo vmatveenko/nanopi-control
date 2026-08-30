@@ -1,0 +1,3 @@
+config nanopi_control 'main'
+	option repository 'vmatveenko/nanopi-control'
+	option update_channel 'stable'

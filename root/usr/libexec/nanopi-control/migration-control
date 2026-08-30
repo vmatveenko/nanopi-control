@@ -1,0 +1,175 @@
+#!/bin/sh
+
+RUNTIME_DIR="/tmp/nanopi-control"
+JOB_FILE="$RUNTIME_DIR/migration-job.json"
+LOG_FILE="$RUNTIME_DIR/migration.log"
+PID_FILE="$RUNTIME_DIR/migration.pid"
+LOCK_DIR="$RUNTIME_DIR/migration.lock"
+WORKER="/usr/libexec/nanopi-control/migration-worker"
+DETECT="/usr/libexec/nanopi-control/detect-storage"
+
+. /usr/share/libubox/jshn.sh
+
+mkdir -p "$RUNTIME_DIR"
+
+write_job() {
+	local phase="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local tmp="$JOB_FILE.tmp.$$"
+
+	json_init
+	json_add_string phase "$phase"
+	json_add_int percent "$percent"
+	json_add_boolean running "$running"
+	json_add_boolean success "$success"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$JOB_FILE"
+}
+
+preflight() {
+	local status source target source_disk target_disk
+	local p1_start p1_size p2_start target_sectors used_kib used_bytes
+	local initial_bytes initial_sectors p2_end commands_ready layout_ready size_ready docker_ready ready reason command
+
+	status="$($DETECT --json)"
+	source="$(jsonfilter -s "$status" -e '@.root_device')"
+	target="$(jsonfilter -s "$status" -e '@.internal_device')"
+	source_disk="${source##*/}"
+	target_disk="${target##*/}"
+
+	p1_start="$(cat "/sys/class/block/${source_disk}p1/start" 2>/dev/null || true)"
+	p1_size="$(cat "/sys/class/block/${source_disk}p1/size" 2>/dev/null || true)"
+	p2_start="$(cat "/sys/class/block/${source_disk}p2/start" 2>/dev/null || true)"
+	target_sectors="$(cat "/sys/class/block/$target_disk/size" 2>/dev/null || true)"
+	used_kib="$(jsonfilter -s "$status" -e '@.root_used_kib')"
+
+	case "$used_kib" in ''|*[!0-9]*) used_kib=0 ;; esac
+	case "$target_sectors" in ''|*[!0-9]*) target_sectors=0 ;; esac
+	used_bytes="$((used_kib * 1024))"
+	initial_bytes="$((used_bytes + 536870912))"
+	[ "$initial_bytes" -ge 1073741824 ] || initial_bytes=1073741824
+	initial_sectors="$(((initial_bytes + 511) / 512))"
+	p2_end="$((131072 + initial_sectors - 1))"
+
+	commands_ready=1
+	for command in parted partprobe mkfs.ext4 e2fsck resize2fs rsync dd sha256sum; do
+		command -v "$command" >/dev/null 2>&1 || commands_ready=0
+	done
+
+	layout_ready=0
+	if [ "$p1_start" = "65536" ] && [ "$p1_size" = "32768" ] && [ "$p2_start" = "131072" ]; then
+		layout_ready=1
+	fi
+
+	size_ready=0
+	if [ "$target_sectors" -gt 0 ] && [ "$p2_end" -lt "$((target_sectors - 2048))" ]; then
+		size_ready=1
+	fi
+
+	docker_ready=1
+	awk '$5 == "/opt/docker" { found = 1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null && docker_ready=0
+
+	ready=1
+	reason="Ready"
+	if [ "$(jsonfilter -s "$status" -e '@.supported')" != "true" ]; then
+		ready=0; reason="Unsupported device"
+	elif [ "$(jsonfilter -s "$status" -e '@.transfer_available')" != "true" ]; then
+		ready=0; reason="The system is not running from SD or eMMC is unavailable"
+	elif [ "$(jsonfilter -s "$status" -e '@.root_filesystem')" != "ext4" ]; then
+		ready=0; reason="Only ext4 installations are supported"
+	elif [ "$source" = "$target" ] || [ -z "$source" ] || [ -z "$target" ]; then
+		ready=0; reason="Source and target devices are invalid"
+	elif [ "$commands_ready" -ne 1 ]; then
+		ready=0; reason="Required system utilities are missing"
+	elif [ "$layout_ready" -ne 1 ]; then
+		ready=0; reason="Unexpected OpenWrt partition layout"
+	elif [ "$size_ready" -ne 1 ]; then
+		ready=0; reason="Internal eMMC is too small for the current system"
+	elif [ "$docker_ready" -ne 1 ]; then
+		ready=0; reason="Docker storage is mounted; migrate before installing Docker"
+	fi
+
+	json_init
+	json_add_boolean ready "$ready"
+	json_add_string reason "$reason"
+	json_add_string source "$source"
+	json_add_string target "$target"
+	json_add_int source_used_bytes "$used_bytes"
+	json_add_int target_size_bytes "$((target_sectors * 512))"
+	json_add_int initial_partition_bytes "$((initial_sectors * 512))"
+	json_add_int initial_partition_end_sector "$p2_end"
+	json_add_boolean commands_ready "$commands_ready"
+	json_add_boolean layout_ready "$layout_ready"
+	json_add_boolean size_ready "$size_ready"
+	json_add_boolean docker_ready "$docker_ready"
+	json_dump
+}
+
+start_worker() {
+	local mode="$1"
+
+	if [ -d "$LOCK_DIR" ]; then
+		printf '%s\n' '{ "accepted": false, "error": "Another storage operation is already running" }'
+		return 1
+	fi
+
+	if ! mkdir "$LOCK_DIR"; then
+		printf '%s\n' '{ "accepted": false, "error": "Unable to acquire migration lock" }'
+		return 1
+	fi
+
+	: > "$LOG_FILE"
+	write_job queued 0 1 0 "Operation queued" ""
+	if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -O "$LOG_FILE" -- "$mode"; then
+		rmdir "$LOCK_DIR" 2>/dev/null || true
+		write_job failed 0 0 0 "Unable to start worker" "Worker start failed"
+		printf '%s\n' '{ "accepted": false, "error": "Unable to start migration worker" }'
+		return 1
+	fi
+
+	printf '%s\n' '{ "accepted": true }'
+}
+
+case "$1" in
+	preflight)
+		preflight
+		;;
+	status)
+		if [ -r "$JOB_FILE" ]; then
+			cat "$JOB_FILE"
+		else
+			printf '%s\n' '{ "phase": "idle", "percent": 0, "running": false, "success": false, "message": "No operation has been started", "error": "" }'
+		fi
+		;;
+	start)
+		check="$(preflight)"
+		target="$(jsonfilter -s "$check" -e '@.target')"
+		if [ "$(jsonfilter -s "$check" -e '@.ready')" != "true" ]; then
+			printf '{ "accepted": false, "error": "%s" }\n' "$(jsonfilter -s "$check" -e '@.reason')"
+			exit 1
+		fi
+		if [ "$2" != "$target" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Confirmation does not match target device" }'
+			exit 1
+		fi
+		start_worker transfer
+		;;
+	expand)
+		status="$($DETECT --json)"
+		if [ "$(jsonfilter -s "$status" -e '@.expand_available')" != "true" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Expansion is not available in the current state" }'
+			exit 1
+		fi
+		if [ "$2" != "EXPAND" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "Expansion confirmation is invalid" }'
+			exit 1
+		fi
+		start_worker expand
+		;;
+	*)
+		printf '%s\n' '{ "error": "Unknown migration command" }'
+		exit 1
+		;;
+esac

@@ -1,0 +1,213 @@
+#!/bin/sh
+
+set -u
+
+RUNTIME_DIR="/tmp/nanopi-control"
+JOB_FILE="$RUNTIME_DIR/migration-job.json"
+PID_FILE="$RUNTIME_DIR/migration.pid"
+LOCK_DIR="$RUNTIME_DIR/migration.lock"
+STATE_FILE="/etc/nanopi-control/migration-state.json"
+TARGET_MOUNT="/mnt/nanopi-control-target"
+CONTROL="/usr/libexec/nanopi-control/migration-control"
+DETECT="/usr/libexec/nanopi-control/detect-storage"
+MODE="${1:-}"
+TARGET_MOUNTED=0
+FINISHED=0
+
+. /usr/share/libubox/jshn.sh
+
+write_job() {
+	local phase="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local tmp="$JOB_FILE.tmp.$$"
+
+	json_init
+	json_add_string phase "$phase"
+	json_add_int percent "$percent"
+	json_add_boolean running "$running"
+	json_add_boolean success "$success"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$JOB_FILE"
+	printf '%s: %s\n' "$phase" "$message"
+}
+
+write_persistent_state() {
+	local file="$1" stage="$2" source="$3" target="$4"
+	local directory tmp
+
+	directory="${file%/*}"
+	mkdir -p "$directory"
+	tmp="$file.tmp.$$"
+	json_init
+	json_add_string stage "$stage"
+	json_add_string source "$source"
+	json_add_string target "$target"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$file"
+}
+
+fail() {
+	local message="$1"
+	write_job failed 0 0 0 "Operation failed" "$message"
+	FINISHED=1
+	exit 1
+}
+
+cleanup() {
+	local rc=$?
+	if [ "$TARGET_MOUNTED" -eq 1 ]; then
+		umount "$TARGET_MOUNT" >/dev/null 2>&1 || true
+	fi
+	rmdir "$TARGET_MOUNT" >/dev/null 2>&1 || true
+	rm -f "$PID_FILE"
+	rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+	if [ "$rc" -ne 0 ] && [ "$FINISHED" -ne 1 ]; then
+		write_job failed 0 0 0 "Operation failed" "Unexpected worker error"
+	fi
+}
+trap cleanup EXIT INT TERM
+
+transfer() {
+	local check source target source_disk target_disk source_p1 target_p1 target_p2
+	local p1_start p1_size p1_end p2_start p2_end copy_count target_state
+	local source_hash target_hash mountpoint
+
+	write_job preflight 2 1 0 "Repeating safety checks" ""
+	check="$($CONTROL preflight)" || fail "Preflight command failed"
+	[ "$(jsonfilter -s "$check" -e '@.ready')" = "true" ] || fail "$(jsonfilter -s "$check" -e '@.reason')"
+
+	source="$(jsonfilter -s "$check" -e '@.source')"
+	target="$(jsonfilter -s "$check" -e '@.target')"
+	source_disk="${source##*/}"
+	target_disk="${target##*/}"
+	source_p1="${source}p1"
+	target_p1="${target}p1"
+	target_p2="${target}p2"
+	p1_start="$(cat "/sys/class/block/${source_disk}p1/start")"
+	p1_size="$(cat "/sys/class/block/${source_disk}p1/size")"
+	p1_end="$((p1_start + p1_size - 1))"
+	p2_start="$(cat "/sys/class/block/${source_disk}p2/start")"
+	p2_end="$(jsonfilter -s "$check" -e '@.initial_partition_end_sector')"
+	copy_count="$((p2_start - 64))"
+
+	write_job unmount_target 5 1 0 "Unmounting old target partitions" ""
+	awk -v target="$target" '$10 ~ ("^" target "p[0-9]+$") { print $5 }' /proc/self/mountinfo 2>/dev/null | while IFS= read -r mountpoint; do
+		[ -n "$mountpoint" ] && umount "$mountpoint"
+	done
+
+	write_job partition 10 1 0 "Creating a temporary eMMC partition layout" ""
+	parted -s "$target" mklabel msdos || fail "Unable to create MBR partition table"
+	parted -s "$target" unit s mkpart primary ext2 "${p1_start}s" "${p1_end}s" || fail "Unable to create boot partition"
+	parted -s "$target" set 1 boot on || fail "Unable to set boot flag"
+	parted -s "$target" unit s mkpart primary ext4 "${p2_start}s" "${p2_end}s" || fail "Unable to create system partition"
+
+	write_job bootloader 18 1 0 "Copying NanoPi bootloader and boot partition" ""
+	dd if="$source" of="$target" bs=512 skip=64 seek=64 count="$copy_count" conv=fsync || fail "Bootloader copy failed"
+	sync
+	partprobe "$target" >/dev/null 2>&1 || true
+
+	tries=0
+	while { [ ! -b "$target_p1" ] || [ ! -b "$target_p2" ]; } && [ "$tries" -lt 10 ]; do
+		sleep 1
+		tries="$((tries + 1))"
+	done
+	[ -b "$target_p1" ] && [ -b "$target_p2" ] || fail "New eMMC partitions did not appear"
+
+	write_job verify_boot 25 1 0 "Verifying boot partition" ""
+	source_hash="$(sha256sum "$source_p1" | awk '{ print $1 }')"
+	target_hash="$(sha256sum "$target_p1" | awk '{ print $1 }')"
+	[ "$source_hash" = "$target_hash" ] || fail "Boot partition verification failed"
+
+	write_job format 32 1 0 "Creating ext4 system filesystem" ""
+	mkfs.ext4 -F -L rootfs "$target_p2" >/dev/null || fail "Unable to format target system partition"
+	mkdir -p "$TARGET_MOUNT"
+	mount "$target_p2" "$TARGET_MOUNT" || fail "Unable to mount target system partition"
+	TARGET_MOUNTED=1
+
+	write_job copy 42 1 0 "Copying the current OpenWrt installation" ""
+	rsync -aH -x --numeric-ids --delete \
+		--exclude='/dev' --exclude='/proc' --exclude='/sys' --exclude='/tmp' \
+		--exclude='/run' --exclude='/mnt' --exclude='/overlay' --exclude='/lost+found' \
+		/ "$TARGET_MOUNT/" || fail "System copy failed"
+
+	write_job synchronize 75 1 0 "Running final synchronization" ""
+	rsync -aH -x --numeric-ids --delete \
+		--exclude='/dev' --exclude='/proc' --exclude='/sys' --exclude='/tmp' \
+		--exclude='/run' --exclude='/mnt' --exclude='/overlay' --exclude='/lost+found' \
+		/ "$TARGET_MOUNT/" || fail "Final synchronization failed"
+	mkdir -p "$TARGET_MOUNT/dev" "$TARGET_MOUNT/proc" "$TARGET_MOUNT/sys" "$TARGET_MOUNT/tmp" "$TARGET_MOUNT/run" "$TARGET_MOUNT/mnt"
+	chmod 1777 "$TARGET_MOUNT/tmp"
+
+	target_state="$TARGET_MOUNT$STATE_FILE"
+	write_persistent_state "$target_state" target_prepared "$source" "$target"
+	[ -x "$TARGET_MOUNT/usr/libexec/nanopi-control/detect-storage" ] || fail "NanoPi Control was not copied to eMMC"
+	[ -r "$TARGET_MOUNT/etc/openwrt_release" ] || fail "OpenWrt release information is missing on eMMC"
+	sync
+
+	write_job filesystem_check 88 1 0 "Checking copied filesystem" ""
+	umount "$TARGET_MOUNT" || fail "Unable to unmount target filesystem"
+	TARGET_MOUNTED=0
+	e2fsck -fn "$target_p2" >/dev/null 2>&1 || fail "Target filesystem check failed"
+
+	write_persistent_state "$STATE_FILE" target_prepared "$source" "$target"
+	$DETECT >/dev/null 2>&1 || true
+	rm -f /tmp/luci-indexcache
+	write_job complete 100 0 1 "Transfer completed. Power off the NanoPi, remove the SD card and boot from eMMC." ""
+	FINISHED=1
+}
+
+expand() {
+	local status disk partition disk_name part_name disk_sectors part_start old_size new_size tries source
+
+	write_job verify_boot 5 1 0 "Verifying that OpenWrt is running from eMMC" ""
+	status="$($DETECT --json)" || fail "Unable to read storage status"
+	[ "$(jsonfilter -s "$status" -e '@.expand_available')" = "true" ] || fail "Expansion is not available"
+
+	disk="$(jsonfilter -s "$status" -e '@.root_device')"
+	partition="$(jsonfilter -s "$status" -e '@.root_partition')"
+	disk_name="${disk##*/}"
+	part_name="${partition##*/}"
+	disk_sectors="$(cat "/sys/class/block/$disk_name/size")"
+	part_start="$(cat "/sys/class/block/$part_name/start")"
+	old_size="$(cat "/sys/class/block/$part_name/size")"
+	source="$(jsonfilter -i "$STATE_FILE" -e '@.source' 2>/dev/null)"
+
+	write_job expand_partition 25 1 0 "Expanding the eMMC partition" ""
+	parted -s "$disk" unit s resizepart 2 "$((disk_sectors - 1))s" || fail "Unable to expand partition table"
+	partprobe "$disk" >/dev/null 2>&1 || true
+
+	tries=0
+	new_size="$(cat "/sys/class/block/$part_name/size")"
+	while [ "$new_size" -le "$old_size" ] && [ "$tries" -lt 10 ]; do
+		sleep 1
+		new_size="$(cat "/sys/class/block/$part_name/size")"
+		tries="$((tries + 1))"
+	done
+
+	if [ "$new_size" -le "$old_size" ]; then
+		write_persistent_state "$STATE_FILE" partition_expanded_reboot_required "$source" "$disk"
+		$DETECT >/dev/null 2>&1 || true
+		write_job reboot_required 100 0 1 "Partition table was updated. Reboot once, then return to finish filesystem expansion." ""
+		FINISHED=1
+		return 0
+	fi
+
+	[ "$new_size" -eq "$((disk_sectors - part_start))" ] || fail "Kernel reported an unexpected partition size"
+	write_job expand_filesystem 70 1 0 "Expanding the ext4 filesystem" ""
+	resize2fs "$partition" || fail "Unable to expand ext4 filesystem"
+	sync
+	write_persistent_state "$STATE_FILE" completed "$source" "$disk"
+	$DETECT >/dev/null 2>&1 || true
+	rm -f /tmp/luci-indexcache
+	write_job complete 100 0 1 "Internal storage expansion completed." ""
+	FINISHED=1
+}
+
+case "$MODE" in
+	transfer) transfer ;;
+	expand) expand ;;
+	*) fail "Unknown worker mode" ;;
+esac

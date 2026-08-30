@@ -1,0 +1,113 @@
+#!/bin/sh
+
+set -u
+
+TAG="${1:-}"
+RUNTIME_DIR="/tmp/nanopi-control"
+STATE_FILE="$RUNTIME_DIR/update.json"
+PID_FILE="$RUNTIME_DIR/update.pid"
+LOCK_DIR="$RUNTIME_DIR/update.lock"
+WORK_DIR="$RUNTIME_DIR/update-download"
+VERSION_FILE="/usr/share/nanopi-control/version"
+DEFAULT_REPOSITORY="vmatveenko/nanopi-control"
+FINISHED=0
+
+. /usr/share/libubox/jshn.sh
+
+repository() {
+	uci -q get nanopi-control.main.repository 2>/dev/null || printf '%s' "$DEFAULT_REPOSITORY"
+}
+
+current_version() {
+	if [ -r "$VERSION_FILE" ]; then
+		read -r version < "$VERSION_FILE"
+		printf '%s' "$version"
+	else
+		printf '0.0.0'
+	fi
+}
+
+write_state() {
+	local status="$1" available="$2" latest="$3" message="$4" error="$5"
+	local tmp="$STATE_FILE.tmp.$$"
+
+	json_init
+	json_add_string status "$status"
+	json_add_boolean update_available "$available"
+	json_add_string current_version "$(current_version)"
+	json_add_string latest_version "${latest#v}"
+	json_add_string tag "$latest"
+	json_add_string repository "$(repository)"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$STATE_FILE"
+}
+
+fail() {
+	write_state error 1 "$TAG" "Update failed" "$1"
+	FINISHED=1
+	exit 1
+}
+
+cleanup() {
+	local rc=$?
+	rm -f "$PID_FILE"
+	rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+	if [ "$rc" -ne 0 ] && [ "$FINISHED" -ne 1 ]; then
+		write_state error 1 "$TAG" "Update failed" "Unexpected update worker error"
+	fi
+}
+trap cleanup EXIT INT TERM
+
+[ -n "$TAG" ] || fail "Release tag is missing"
+repo="$(repository)"
+base="https://github.com/$repo/releases/download/$TAG"
+
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+write_state downloading 1 "$TAG" "Downloading release packages" ""
+
+uclient-fetch -q -T 30 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/SHA256SUMS" "$base/SHA256SUMS" || fail "Unable to download SHA256SUMS"
+uclient-fetch -q -T 60 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/luci-app-nanopi-control.apk" "$base/luci-app-nanopi-control.apk" || fail "Unable to download application package"
+
+if uclient-fetch -q -T 60 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/luci-i18n-nanopi-control-ru.apk" "$base/luci-i18n-nanopi-control-ru.apk"; then
+	has_translation=1
+else
+	has_translation=0
+	rm -f "$WORK_DIR/luci-i18n-nanopi-control-ru.apk"
+fi
+
+write_state verifying 1 "$TAG" "Verifying package checksums" ""
+(
+	cd "$WORK_DIR" || exit 1
+	grep '  luci-app-nanopi-control.apk$' SHA256SUMS | sha256sum -c - >/dev/null 2>&1
+) || fail "Application package checksum mismatch"
+
+if [ "$has_translation" -eq 1 ]; then
+	(
+		cd "$WORK_DIR" || exit 1
+		grep '  luci-i18n-nanopi-control-ru.apk$' SHA256SUMS | sha256sum -c - >/dev/null 2>&1
+	) || fail "Translation package checksum mismatch"
+fi
+
+write_state installing 1 "$TAG" "Installing NanoPi Control update" ""
+if [ "$has_translation" -eq 1 ]; then
+	apk --allow-untrusted add "$WORK_DIR/luci-app-nanopi-control.apk" "$WORK_DIR/luci-i18n-nanopi-control-ru.apk" || fail "apk installation failed"
+else
+	apk --allow-untrusted add "$WORK_DIR/luci-app-nanopi-control.apk" || fail "apk installation failed"
+fi
+
+/etc/init.d/nanopi-control enable >/dev/null 2>&1 || true
+/etc/init.d/nanopi-control restart >/dev/null 2>&1 || true
+rm -f /tmp/luci-indexcache
+write_state complete 0 "$TAG" "NanoPi Control was updated successfully. Reloading the interface." ""
+FINISHED=1
+sync
+
+(
+	sleep 2
+	/etc/init.d/rpcd restart
+	/etc/init.d/uhttpd restart
+) >/dev/null 2>&1 &

@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: NanoPi Control 0.1.0\n"
+"Project-Id-Version: NanoPi Control 0.2.0\n"
 "Language: ru\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -167,3 +167,92 @@ msgstr "Начать перенос"
 msgid "Copy engine is not enabled in this version"
 msgstr "Механизм копирования ещё не включён в этой версии"
 
+msgid "Transfer the current OpenWrt installation, settings and NanoPi Control from the SD card to internal eMMC without downloading another firmware image."
+msgstr "Перенос текущей установки OpenWrt, настроек и NanoPi Control с SD-карты во внутреннюю eMMC без скачивания другого образа прошивки."
+
+msgid "Warning: "
+msgstr "Внимание: "
+
+msgid "All existing data on %s will be erased. The SD card is not modified and remains your recovery option."
+msgstr "Все имеющиеся данные на %s будут удалены. SD-карта не изменяется и остаётся средством восстановления."
+
+msgid "OpenWrt disk layout"
+msgstr "Разметка OpenWrt"
+
+msgid "Supported"
+msgstr "Поддерживается"
+
+msgid "Unexpected layout"
+msgstr "Неожиданная разметка"
+
+msgid "Required utilities"
+msgstr "Необходимые утилиты"
+
+msgid "Installed"
+msgstr "Установлены"
+
+msgid "Missing packages"
+msgstr "Отсутствуют пакеты"
+
+msgid "Docker state"
+msgstr "Состояние Docker"
+
+msgid "Ready"
+msgstr "Готово"
+
+msgid "Docker storage must not be mounted"
+msgstr "Хранилище Docker не должно быть смонтировано"
+
+msgid "Target capacity"
+msgstr "Объём целевого накопителя"
+
+msgid "Final result"
+msgstr "Итоговая проверка"
+
+msgid "Erase eMMC and start transfer"
+msgstr "Очистить eMMC и начать перенос"
+
+msgid "To confirm erasing the internal storage, enter its device name exactly: %s"
+msgstr "Для подтверждения очистки внутренней памяти точно введите имя устройства: %s"
+
+msgid "After successful copying, shut the NanoPi down, remove the SD card and boot it again. Do not erase the SD card until eMMC boot is verified."
+msgstr "После успешного копирования выключите NanoPi, извлеките SD-карту и загрузите устройство снова. Не очищайте SD-карту, пока загрузка с eMMC не будет проверена."
+
+msgid "OpenWrt is now running from internal eMMC. The copied system has been verified and is ready for the final expansion step."
+msgstr "OpenWrt загружен с внутренней eMMC. Скопированная система проверена и готова к заключительному расширению."
+
+msgid "This operation extends partition 2 and its ext4 filesystem to all available eMMC space."
+msgstr "Операция расширит второй раздел и его файловую систему ext4 на всё доступное пространство eMMC."
+
+msgid "Expand internal storage"
+msgstr "Расширить внутреннюю память"
+
+msgid "The transfer assistant is not available in the current boot state."
+msgstr "Мастер переноса недоступен при текущем состоянии загрузки."
+
+msgid "Waiting"
+msgstr "Ожидание"
+
+msgid "Checking…"
+msgstr "Проверка…"
+
+msgid "Check for updates"
+msgstr "Проверить обновления"
+
+msgid "Update to %s"
+msgstr "Обновить до %s"
+
+msgid "Installed version"
+msgstr "Установленная версия"
+
+msgid "Latest release"
+msgstr "Последний выпуск"
+
+msgid "Not checked"
+msgstr "Не проверялось"
+
+msgid "Updates have not been checked"
+msgstr "Проверка обновлений ещё не выполнялась"
+
+msgid "NanoPi Control updates"
+msgstr "Обновления NanoPi Control"

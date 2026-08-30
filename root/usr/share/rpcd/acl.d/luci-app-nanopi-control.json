@@ -3,11 +3,15 @@
 		"description": "Grant access to NanoPi Control status information",
 		"read": {
 			"ubus": {
-				"nanopi-control": [ "status" ],
+				"nanopi-control": [ "status", "migration_preflight", "migration_status", "update_check", "update_status" ],
 				"network.interface": [ "dump" ],
 				"system": [ "board", "info" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"nanopi-control": [ "migration_start", "migration_expand", "update_start" ]
 			}
 		}
 	}
 }
-

@@ -41,6 +41,7 @@ run_detect() {
 	NANOPI_CONTROL_MOUNTINFO="$TEST_DIR/mountinfo" \
 	NANOPI_CONTROL_SYSINFO_DIR="$TEST_DIR/sysinfo" \
 	NANOPI_CONTROL_VERSION_FILE="$TEST_DIR/version" \
+	NANOPI_CONTROL_STATE_FILE="$TEST_DIR/migration-state.json" \
 		"$DETECT_SCRIPT" --json
 }
 
@@ -64,7 +65,7 @@ assert_json "$sd_result" '@.boot_medium' 'sd'
 assert_json "$sd_result" '@.root_device' '/dev/mmcblk0'
 assert_json "$sd_result" '@.internal_device' '/dev/mmcblk1'
 assert_json "$sd_result" '@.transfer_available' 'true'
-[ -f "$TEST_DIR/runtime/booted-from-sd" ]
+[ -f "$TEST_DIR/runtime/show-transfer" ]
 
 printf '%s\n' '17 1 179:4 / / rw,noatime - ext4 /dev/root rw' > "$TEST_DIR/mountinfo"
 emmc_result="$(run_detect)"
@@ -72,7 +73,13 @@ assert_json "$emmc_result" '@.supported' 'true'
 assert_json "$emmc_result" '@.boot_medium' 'emmc'
 assert_json "$emmc_result" '@.root_device' '/dev/mmcblk1'
 assert_json "$emmc_result" '@.transfer_available' 'false'
-[ ! -e "$TEST_DIR/runtime/booted-from-sd" ]
+[ ! -e "$TEST_DIR/runtime/show-transfer" ]
+
+printf '%s\n' '{ "stage": "target_prepared", "source": "/dev/mmcblk0", "target": "/dev/mmcblk1" }' > "$TEST_DIR/migration-state.json"
+expanded_result="$(run_detect)"
+assert_json "$expanded_result" '@.boot_medium' 'emmc'
+assert_json "$expanded_result" '@.expand_available' 'true'
+assert_json "$expanded_result" '@.migration_stage' 'target_prepared'
+[ -f "$TEST_DIR/runtime/show-transfer" ]
 
 printf '%s\n' 'All storage detection tests passed.'
-

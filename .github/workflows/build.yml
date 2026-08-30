@@ -3,6 +3,7 @@ name: Build OpenWrt package
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Check out repository
@@ -20,17 +21,36 @@ jobs:
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: aarch64_generic-25.12.5
-          PACKAGES: luci-app-nanopi-control
+          PACKAGES: luci-app-nanopi-control luci-i18n-nanopi-control-ru
           BUILD_LOG: 1
           V: s
+
+      - name: Prepare stable release filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          app="$(find bin/packages -type f -name 'luci-app-nanopi-control*.apk' | head -n 1)"
+          i18n="$(find bin/packages -type f -name 'luci-i18n-nanopi-control-ru*.apk' | head -n 1)"
+          test -n "$app" && test -n "$i18n"
+          cp "$app" release/luci-app-nanopi-control.apk
+          cp "$i18n" release/luci-i18n-nanopi-control-ru.apk
+          (cd release && sha256sum *.apk > SHA256SUMS)
 
       - name: Upload packages and build logs
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-nanopi-control-openwrt-25.12.5
           path: |
-            bin/packages/**/*.apk
-            bin/packages/**/*.ipk
+            release/*
             logs/**
           if-no-files-found: error
 
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --title "NanoPi Control ${GITHUB_REF_NAME}" \
+            --generate-notes

@@ -1,0 +1,117 @@
+#!/bin/sh
+
+RUNTIME_DIR="/tmp/nanopi-control"
+STATE_FILE="$RUNTIME_DIR/update.json"
+PID_FILE="$RUNTIME_DIR/update.pid"
+LOCK_DIR="$RUNTIME_DIR/update.lock"
+VERSION_FILE="/usr/share/nanopi-control/version"
+WORKER="/usr/libexec/nanopi-control/update-worker"
+DEFAULT_REPOSITORY="vmatveenko/nanopi-control"
+
+. /usr/share/libubox/jshn.sh
+
+mkdir -p "$RUNTIME_DIR"
+
+current_version() {
+	if [ -r "$VERSION_FILE" ]; then
+		read -r version < "$VERSION_FILE"
+		printf '%s' "$version"
+	else
+		printf '0.0.0'
+	fi
+}
+
+repository() {
+	uci -q get nanopi-control.main.repository 2>/dev/null || printf '%s' "$DEFAULT_REPOSITORY"
+}
+
+write_state() {
+	local status="$1" available="$2" current="$3" latest="$4" tag="$5" message="$6" error="$7"
+	local tmp="$STATE_FILE.tmp.$$"
+
+	json_init
+	json_add_string status "$status"
+	json_add_boolean update_available "$available"
+	json_add_string current_version "$current"
+	json_add_string latest_version "$latest"
+	json_add_string tag "$tag"
+	json_add_string repository "$(repository)"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$STATE_FILE"
+}
+
+check_update() {
+	local current repo response tag latest available published
+
+	current="$(current_version)"
+	repo="$(repository)"
+	write_state checking 0 "$current" "" "" "Checking GitHub releases" ""
+
+	response="$(uclient-fetch -q -T 20 -U "NanoPi-Control/$current" \
+		--header='Accept: application/vnd.github+json' \
+		-O - "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null)" || {
+		write_state error 0 "$current" "" "" "Unable to check for updates" "GitHub request failed"
+		cat "$STATE_FILE"
+		return 1
+	}
+
+	tag="$(jsonfilter -s "$response" -e '@.tag_name' 2>/dev/null)"
+	published="$(jsonfilter -s "$response" -e '@.published_at' 2>/dev/null)"
+	latest="${tag#v}"
+	if [ -z "$tag" ] || [ -z "$latest" ]; then
+		write_state error 0 "$current" "" "" "Unable to check for updates" "Invalid GitHub release response"
+		cat "$STATE_FILE"
+		return 1
+	fi
+
+	available=0
+	[ "$latest" = "$current" ] || available=1
+	if [ "$available" -eq 1 ]; then
+		write_state available 1 "$current" "$latest" "$tag" "Version $latest is available ($published)" ""
+	else
+		write_state current 0 "$current" "$latest" "$tag" "NanoPi Control is up to date" ""
+	fi
+	cat "$STATE_FILE"
+}
+
+case "$1" in
+	check)
+		check_update
+		;;
+	status)
+		if [ -r "$STATE_FILE" ]; then
+			cat "$STATE_FILE"
+		else
+			current="$(current_version)"
+			printf '{ "status": "idle", "update_available": false, "current_version": "%s", "latest_version": "", "repository": "%s", "message": "Updates have not been checked", "error": "" }\n' "$current" "$(repository)"
+		fi
+		;;
+	start)
+		if [ -d "$LOCK_DIR" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "An update is already running" }'
+			exit 1
+		fi
+		state="$(check_update)" || exit 1
+		if [ "$(jsonfilter -s "$state" -e '@.update_available')" != "true" ]; then
+			printf '%s\n' '{ "accepted": false, "error": "No update is available" }'
+			exit 1
+		fi
+		if ! mkdir "$LOCK_DIR"; then
+			printf '%s\n' '{ "accepted": false, "error": "Unable to acquire update lock" }'
+			exit 1
+		fi
+		if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -- "$(jsonfilter -s "$state" -e '@.tag')"; then
+			rmdir "$LOCK_DIR" 2>/dev/null || true
+			printf '%s\n' '{ "accepted": false, "error": "Unable to start update worker" }'
+			exit 1
+		fi
+		printf '%s\n' '{ "accepted": true }'
+		;;
+	*)
+		printf '%s\n' '{ "error": "Unknown update command" }'
+		exit 1
+		;;
+esac
