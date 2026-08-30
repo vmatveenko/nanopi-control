@@ -52,15 +52,11 @@ if [ -n "$root_devid" ] && [ -e "$SYS_DEV_BLOCK/$root_devid" ]; then
 	esac
 
 	root_removable="$(read_one_line "$SYS_BLOCK/$root_disk/removable")"
-	case "$root_disk:$root_removable" in
-		mmcblk*:1) boot_medium="sd" ;;
-		mmcblk*:0)
-			if [ "$(read_one_line "$SYS_BLOCK/$root_disk/device/type")" = "MMC" ]; then
-				boot_medium="emmc"
-			else
-				boot_medium="mmc"
-			fi
-			;;
+	root_type="$(read_one_line "$SYS_BLOCK/$root_disk/device/type")"
+	case "$root_disk:$root_type:$root_removable" in
+		mmcblk*:MMC:*) boot_medium="emmc" ;;
+		mmcblk*:SD:*|mmcblk*:*:1) boot_medium="sd" ;;
+		mmcblk*:*) boot_medium="mmc" ;;
 	esac
 fi
 
@@ -75,10 +71,10 @@ for disk_path in "$SYS_BLOCK"/mmcblk[0-9]; do
 	removable="$(read_one_line "$disk_path/removable")"
 	type="$(read_one_line "$disk_path/device/type")"
 
-	if [ "$removable" = "0" ] && [ "$type" = "MMC" ]; then
+	if [ "$type" = "MMC" ]; then
 		internal_device="/dev/$disk"
 		internal_size="$(size_bytes "$disk")"
-	elif [ "$removable" = "1" ]; then
+	elif [ "$type" = "SD" ] || [ "$removable" = "1" ]; then
 		sd_device="/dev/$disk"
 		sd_size="$(size_bytes "$disk")"
 	fi

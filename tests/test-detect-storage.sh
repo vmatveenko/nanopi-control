@@ -23,7 +23,8 @@ printf '%s\n' 'friendlyarm,nanopi-r5s' > "$TEST_DIR/sysinfo/board_name"
 printf '%s\n' 'FriendlyElec NanoPi R5S' > "$TEST_DIR/sysinfo/model"
 printf '%s\n' '0.1.0-test' > "$TEST_DIR/version"
 
-printf '%s\n' '1' > "$TEST_DIR/sys/class/block/mmcblk0/removable"
+# The NanoPi R5S kernel reports its external SD slot as non-removable.
+printf '%s\n' '0' > "$TEST_DIR/sys/class/block/mmcblk0/removable"
 printf '%s\n' '124735488' > "$TEST_DIR/sys/class/block/mmcblk0/size"
 printf '%s\n' 'SD' > "$TEST_DIR/sys/class/block/mmcblk0/device/type"
 
