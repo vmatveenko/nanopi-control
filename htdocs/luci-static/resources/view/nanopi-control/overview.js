@@ -111,9 +111,9 @@ return view.extend({
 		const color = update.error ? '#b42318' : available ? '#d97706' : update.status === 'current' || update.status === 'complete' ? '#16803a' : '#0066cc';
 
 		const checkButton = E('button', {
-			'class': 'btn cbi-button cbi-button-action',
-			'disabled': checking
+			'class': 'btn cbi-button cbi-button-action'
 		}, checking ? _('Checking…') : _('Check for updates'));
+		checkButton.disabled = checking;
 		checkButton.addEventListener('click', ui.createHandlerFn(this, function() {
 			checkButton.disabled = true;
 			return callUpdateCheck().then(function(state) {
@@ -127,9 +127,9 @@ return view.extend({
 		const buttons = [ checkButton ];
 		if (available) {
 			const updateButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important',
-				'disabled': checking
+				'class': 'btn cbi-button cbi-button-positive important'
 			}, _('Update to %s').format(update.latest_version || update.tag || '-'));
+			updateButton.disabled = checking;
 			updateButton.addEventListener('click', ui.createHandlerFn(this, function() {
 				updateButton.disabled = true;
 				return callUpdateStart().then(function(result) {
