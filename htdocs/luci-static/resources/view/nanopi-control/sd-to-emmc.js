@@ -88,7 +88,10 @@ return view.extend({
 		const job = data[2] || {};
 		const onSd = !!status.transfer_available;
 		const canExpand = !!status.expand_available;
-		const copied = canExpand || status.migration_stage === 'completed';
+		const migrationStage = status.migration_stage || 'not_started';
+		const copied = canExpand || migrationStage === 'target_prepared' ||
+			migrationStage === 'partition_expanded_reboot_required' || migrationStage === 'completed';
+		const preflightPassed = onSd && !!preflight.ready;
 
 		const root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('SD to eMMC')),
@@ -99,8 +102,8 @@ return view.extend({
 		root.appendChild(E('div', {
 			'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin:18px 0'
 		}, [
-			step(1, _('Preflight check'), _('Verify the board, source system and target eMMC.'), onSd ? 'active' : 'done'),
-			step(2, _('Copy system'), _('Prepare eMMC and transfer the current OpenWrt state.'), copied ? 'done' : onSd ? 'active' : 'pending'),
+			step(1, _('Preflight check'), _('Verify the board, source system and target eMMC.'), preflightPassed || copied ? 'done' : onSd ? 'active' : 'pending'),
+			step(2, _('Copy system'), _('Prepare eMMC and transfer the current OpenWrt state.'), copied ? 'done' : preflightPassed ? 'active' : 'pending'),
 			step(3, _('Boot from eMMC'), _('Power off, remove the SD card and start the device.'), canExpand || status.migration_stage === 'completed' ? 'done' : copied ? 'active' : 'pending'),
 			step(4, _('Expand partition'), _('Use all available internal storage after verification.'), status.migration_stage === 'completed' ? 'done' : canExpand ? 'active' : 'pending')
 		]));
