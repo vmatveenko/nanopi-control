@@ -21,6 +21,9 @@ jobs:
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: aarch64_generic-25.12.5
+          # A feed contains package directories. Mount the checkout parent so
+          # this single-package repository appears as /feed/nanopi-control.
+          FEED_DIR: ${{ github.workspace }}/..
           PACKAGES: luci-app-nanopi-control luci-i18n-nanopi-control-ru
           BUILD_LOG: 1
           V: s
