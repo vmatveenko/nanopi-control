@@ -6,10 +6,7 @@
 			"type": "firstchild"
 		},
 		"depends": {
-			"acl": [ "luci-app-nanopi-control" ],
-			"fs": {
-				"/tmp/nanopi-control/show-transfer": "file"
-			}
+			"acl": [ "luci-app-nanopi-control" ]
 		}
 	},
 	"admin/services/nanopi-control/overview": {
@@ -31,7 +28,10 @@
 			"path": "nanopi-control/emmc"
 		},
 		"depends": {
-			"acl": [ "luci-app-nanopi-control" ]
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/tmp/nanopi-control/show-transfer": "file"
+			}
 		}
 	}
 }

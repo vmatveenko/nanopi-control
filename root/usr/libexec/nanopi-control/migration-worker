@@ -1,7 +1,5 @@
 #!/bin/sh
 
-set -u
-
 RUNTIME_DIR="/tmp/nanopi-control"
 JOB_FILE="$RUNTIME_DIR/migration-job.json"
 PID_FILE="$RUNTIME_DIR/migration.pid"

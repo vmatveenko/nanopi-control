@@ -204,7 +204,8 @@ case "$1" in
 		status="$($DETECT --json)"
 		target="$(jsonfilter -s "$status" -e '@.internal_device')"
 		root="$(jsonfilter -s "$status" -e '@.root_device')"
-		if [ "$(jsonfilter -s "$status" -e '@.supported')" != "true" ] || [ -z "$target" ] || [ ! -b "$target" ]; then
+		boot_medium="$(jsonfilter -s "$status" -e '@.boot_medium')"
+		if [ "$(jsonfilter -s "$status" -e '@.supported')" != "true" ] || [ "$boot_medium" != "sd" ] || [ -z "$target" ] || [ ! -b "$target" ]; then
 			printf '%s\n' '{ "accepted": false, "error": "Internal eMMC is unavailable" }'
 			exit 1
 		fi

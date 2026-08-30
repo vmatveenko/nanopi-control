@@ -59,16 +59,83 @@ function preflightReason(reason) {
 function step(number, title, description, state, action) {
 	let color = state === 'done' ? '#16803a' : state === 'active' ? '#0066cc' : '#ddd';
 	return E('div', {
+		'id': 'nanopi-migration-step-%d'.format(number),
+		'data-state': state,
 		'style': 'border:1px solid %s;border-radius:5px;padding:12px 14px;height:140px;box-sizing:border-box;display:flex;flex-direction:column'.format(color)
 	}, [
 		E('div', { 'style': 'min-height:32px;display:flex;justify-content:space-between;gap:8px;align-items:flex-start' }, [
 			E('div', { 'style': 'font-size:13px;color:#666;padding-top:6px' }, _('Step %d').format(number)),
 			action || ''
 		]),
-		E('div', { 'style': 'font-size:18px;font-weight:bold;margin:6px 0;color:%s'.format(state === 'done' ? '#16803a' : '#333') },
+		E('div', {
+			'class': 'nanopi-migration-step-title',
+			'data-title': title,
+			'style': 'font-size:18px;font-weight:bold;margin:6px 0;color:%s'.format(state === 'done' ? '#16803a' : '#333')
+		},
 			(state === 'done' ? '✓ ' : '') + title),
 		E('div', { 'style': 'color:#666;line-height:1.35' }, description)
 	]);
+}
+
+function setStepState(number, state) {
+	let card = document.getElementById('nanopi-migration-step-%d'.format(number));
+	if (!card)
+		return;
+
+	let title = card.querySelector('.nanopi-migration-step-title');
+	let color = state === 'done' ? '#16803a' : state === 'active' ? '#0066cc' : '#ddd';
+	card.dataset.state = state;
+	card.style.borderColor = color;
+	if (title) {
+		title.style.color = state === 'done' ? '#16803a' : '#333';
+		title.textContent = (state === 'done' ? '✓ ' : '') + title.dataset.title;
+	}
+}
+
+function updateStageCards(stage) {
+	let copied = stage === 'copy_completed' || stage === 'boot_confirmed' ||
+		stage === 'partition_expanded_reboot_required' || stage === 'expansion_completed';
+	let bootConfirmed = stage === 'boot_confirmed' ||
+		stage === 'partition_expanded_reboot_required' || stage === 'expansion_completed';
+	let expansionCompleted = stage === 'expansion_completed';
+
+	setStepState(1, copied ? 'done' : 'active');
+	setStepState(2, copied ? 'done' : 'active');
+	setStepState(3, bootConfirmed ? 'done' : copied ? 'active' : 'pending');
+	setStepState(4, expansionCompleted ? 'done' : bootConfirmed ? 'active' : 'pending');
+}
+
+function jobText(text) {
+	const translations = {
+		'Waiting': 'Ожидание',
+		'Operation queued': 'Операция поставлена в очередь',
+		'Repeating safety checks': 'Повторная проверка безопасности',
+		'Unmounting old target partitions': 'Отключение старых разделов eMMC',
+		'Creating a temporary eMMC partition layout': 'Создание временной разметки eMMC',
+		'Copying NanoPi bootloader and boot partition': 'Копирование загрузчика NanoPi и загрузочного раздела',
+		'Verifying boot partition': 'Проверка загрузочного раздела',
+		'Creating ext4 system filesystem': 'Создание системной файловой системы ext4',
+		'Copying the current OpenWrt installation': 'Копирование текущей системы OpenWrt',
+		'Temporarily stopping Docker for a consistent copy': 'Временная остановка Docker для целостного копирования',
+		'Running final synchronization': 'Финальная синхронизация',
+		'Checking copied filesystem': 'Проверка скопированной файловой системы',
+		'Saving completed copy state on eMMC': 'Сохранение состояния завершённого копирования',
+		'Restarting Docker on the SD system': 'Перезапуск Docker в системе на SD-карте',
+		'Transfer completed. Power off the NanoPi, remove the SD card and boot from eMMC.': 'Перенос завершён. Выключите NanoPi, извлеките SD-карту и загрузитесь с eMMC.',
+		'Verifying the internal eMMC target': 'Проверка внутренней eMMC',
+		'Erasing eMMC partition table and filesystem signatures': 'Очистка таблицы разделов и сигнатур файловых систем eMMC',
+		'Erasing backup partition metadata': 'Очистка резервных метаданных разделов',
+		'Internal eMMC was erased and the SD to eMMC assistant was reset.': 'Внутренняя eMMC очищена, мастер переноса сброшен.',
+		'Verifying that OpenWrt is running from internal eMMC': 'Проверка загрузки OpenWrt со внутренней eMMC',
+		'Boot from internal eMMC was confirmed.': 'Загрузка со внутренней eMMC подтверждена.',
+		'Verifying that OpenWrt is running from eMMC': 'Проверка загрузки OpenWrt с eMMC',
+		'Expanding the eMMC partition': 'Расширение раздела eMMC',
+		'Partition table was updated. Reboot once, then return to finish filesystem expansion.': 'Таблица разделов обновлена. Перезагрузите NanoPi и вернитесь для завершения расширения.',
+		'Expanding the ext4 filesystem': 'Расширение файловой системы ext4',
+		'Internal storage expansion completed.': 'Расширение внутреннего накопителя завершено.',
+		'Operation failed': 'Операция завершилась с ошибкой'
+	};
+	return translations[text] || text || '';
 }
 
 function progressBlock(job) {
@@ -76,13 +143,13 @@ function progressBlock(job) {
 	let color = job.error ? '#b42318' : job.success ? '#16803a' : '#0066cc';
 	return E('div', { 'class': 'cbi-section', 'style': 'margin:16px 0' }, [
 		E('div', { 'style': 'display:flex;justify-content:space-between;margin-bottom:7px' }, [
-			E('strong', {}, job.message || _('Waiting')),
+			E('strong', {}, jobText(job.message || 'Waiting')),
 			E('span', {}, '%d%%'.format(percent))
 		]),
 		E('div', { 'style': 'height:12px;background:#e5e7eb;border-radius:8px;overflow:hidden' }, [
-			E('div', { 'style': 'height:100%;width:%d%%;background:%s;transition:width .3s'.format(percent, color) })
+			E('div', { 'style': 'height:100%;width:' + percent + '%;background:' + color + ';transition:width .3s' })
 		]),
-		job.error ? E('div', { 'class': 'alert-message error', 'style': 'margin-top:10px' }, job.error) : ''
+		job.error ? E('div', { 'class': 'alert-message error', 'style': 'margin-top:10px' }, jobText(job.error)) : ''
 	]);
 }
 
@@ -97,7 +164,14 @@ return view.extend({
 				container.replaceChildren(progressBlock(job));
 				if (!job.running) {
 					window.clearInterval(timer);
-					window.setTimeout(function() { window.location.reload(); }, 1300);
+					callStatus().then(function(status) {
+						let stage = status.migration_stage || 'not_started';
+						if (job.success && job.phase === 'complete' && status.boot_medium === 'sd' && stage === 'copy_completed') {
+							updateStageCards(stage);
+							return;
+						}
+						window.setTimeout(function() { window.location.reload(); }, 1300);
+					});
 				}
 			});
 		}, 1500);
@@ -107,7 +181,7 @@ return view.extend({
 		const status = data[0] || {};
 		const preflight = data[1] || {};
 		const job = data[2] || {};
-		const onSd = !!status.transfer_available;
+		const onSd = status.boot_medium === 'sd' && !!status.transfer_available;
 		const canExpand = !!status.expand_available;
 		const migrationStage = status.migration_stage || 'not_started';
 		const copied = migrationStage === 'copy_completed' || migrationStage === 'boot_confirmed' ||
@@ -120,8 +194,7 @@ return view.extend({
 		let confirmBootButton = null;
 		if (status.boot_confirm_available) {
 			confirmBootButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important',
-				'style': 'padding:4px 9px;min-height:28px'
+				'class': 'cbi-button cbi-button-action important'
 			}, _('Confirm'));
 			confirmBootButton.disabled = !!job.running;
 			confirmBootButton.addEventListener('click', ui.createHandlerFn(this, function() {
@@ -140,8 +213,7 @@ return view.extend({
 		let expandButton = null;
 		if (canExpand) {
 			expandButton = E('button', {
-				'class': 'btn cbi-button cbi-button-positive important',
-				'style': 'padding:4px 9px;min-height:28px'
+				'class': 'cbi-button cbi-button-action important'
 			}, _('Expand'));
 			expandButton.disabled = !!job.running;
 			expandButton.addEventListener('click', ui.createHandlerFn(this, function() {
