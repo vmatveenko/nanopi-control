@@ -1,0 +1,92 @@
+#!/bin/sh
+
+RUNTIME_DIR="/tmp/nanopi-control"
+JOB_FILE="$RUNTIME_DIR/sd-expand-job.json"
+PID_FILE="$RUNTIME_DIR/sd-expand.pid"
+LOCK_DIR="$RUNTIME_DIR/migration.lock"
+VERIFY_MOUNT="$RUNTIME_DIR/sd-verify"
+MBR_BACKUP="/etc/nanopi-control/sd-mbr-before-expand.bin"
+CARD_STATE_FILE="/etc/nanopi-control/sd-expansion-state.json"
+CONTROL="/usr/libexec/nanopi-control/sd-expand-control"
+FINISHED=0
+
+. /usr/share/libubox/jshn.sh
+
+write_job() {
+	local phase="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local tmp="$JOB_FILE.tmp.$$"
+	json_init
+	json_add_string phase "$phase"
+	json_add_int percent "$percent"
+	json_add_boolean running "$running"
+	json_add_boolean success "$success"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$JOB_FILE"
+	printf '%s: %s\n' "$phase" "$message"
+}
+
+fail() { write_job failed 0 0 0 "SD expansion failed" "$1"; FINISHED=1; exit 1; }
+cleanup() {
+	local rc=$?
+	umount "$VERIFY_MOUNT" >/dev/null 2>&1 || true
+	rmdir "$VERIFY_MOUNT" >/dev/null 2>&1 || true
+	rm -f "$PID_FILE"
+	rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+	if [ "$rc" -ne 0 ] && [ "$FINISHED" -ne 1 ]; then write_job failed 0 0 0 "SD expansion failed" "Unexpected worker error"; fi
+}
+trap cleanup EXIT INT TERM
+
+expand_sd() {
+	local check disk partition part_name current_size desired_size desired_end new_size tries fs_kib fs_sectors fsck_rc
+	write_job sd_verify 5 1 0 "Verifying the offline OpenWrt SD card" ""
+	check="$($CONTROL info)" || fail "Unable to read SD expansion information"
+	[ "$(jsonfilter -s "$check" -e '@.available')" = "true" ] || fail "$(jsonfilter -s "$check" -e '@.reason')"
+	disk="$(jsonfilter -s "$check" -e '@.disk')"
+	partition="$(jsonfilter -s "$check" -e '@.partition')"
+	desired_size="$(jsonfilter -s "$check" -e '@.desired_size_sectors')"
+	part_name="${partition##*/}"
+	current_size="$(cat "/sys/class/block/$part_name/size")"
+	desired_end="$((131072 + desired_size - 1))"
+
+	write_job sd_backup 12 1 0 "Saving the current SD partition table" ""
+	dd if="$disk" of="$MBR_BACKUP" bs=512 count=1 conv=fsync >/dev/null 2>&1 || fail "Unable to back up the SD partition table"
+	if [ "$current_size" -lt "$desired_size" ]; then
+		write_job sd_partition 28 1 0 "Expanding the SD system partition" ""
+		parted -s "$disk" unit s resizepart 2 "${desired_end}s" || fail "Unable to expand the SD partition table"
+		sync
+		partprobe "$disk" >/dev/null 2>&1 || true
+		tries=0
+		new_size="$(cat "/sys/class/block/$part_name/size")"
+		while [ "$new_size" -lt "$desired_size" ] && [ "$tries" -lt 10 ]; do sleep 1; new_size="$(cat "/sys/class/block/$part_name/size")"; tries="$((tries + 1))"; done
+	else new_size="$current_size"; fi
+	[ "$new_size" -eq "$desired_size" ] || fail "Kernel reported an unexpected SD partition size"
+
+	write_job sd_filesystem_check 45 1 0 "Checking the offline SD ext4 filesystem" ""
+	e2fsck -pf "$partition" >/dev/null 2>&1; fsck_rc=$?
+	[ "$fsck_rc" -le 1 ] || fail "The SD ext4 filesystem check failed"
+	write_job sd_filesystem 65 1 0 "Expanding the offline SD ext4 filesystem" ""
+	resize2fs "$partition" || fail "Unable to expand the offline SD ext4 filesystem"
+	sync
+	write_job sd_final_check 85 1 0 "Verifying the expanded OpenWrt SD card" ""
+	e2fsck -pf "$partition" >/dev/null 2>&1; fsck_rc=$?
+	[ "$fsck_rc" -le 1 ] || fail "The expanded SD filesystem check failed"
+
+	mkdir -p "$VERIFY_MOUNT"
+	mount -t ext4 "$partition" "$VERIFY_MOUNT" || fail "Unable to mount the expanded SD filesystem"
+	[ -r "$VERIFY_MOUNT/etc/openwrt_release" ] || fail "OpenWrt release information is missing from the SD card"
+	fs_kib="$(df -Pk "$VERIFY_MOUNT" | awk 'NR == 2 { print $2 }')"
+	case "$fs_kib" in ''|*[!0-9]*) fail "Unable to verify the expanded filesystem size" ;; esac
+	fs_sectors="$((fs_kib * 2))"
+	[ "$fs_sectors" -ge "$((desired_size * 9 / 10))" ] || fail "The SD filesystem did not reach the expected size"
+	rm -f "$VERIFY_MOUNT$CARD_STATE_FILE"
+	sync
+	umount "$VERIFY_MOUNT" || fail "Unable to unmount the expanded SD filesystem"
+	rmdir "$VERIFY_MOUNT" >/dev/null 2>&1 || true
+	write_job sd_complete 100 0 1 "OpenWrt SD card expansion completed." ""
+	FINISHED=1
+}
+
+case "${1:-}" in expand_sd) expand_sd ;; *) fail "Unknown SD expansion worker mode" ;; esac

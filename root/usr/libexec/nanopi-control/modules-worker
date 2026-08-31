@@ -1,0 +1,90 @@
+#!/bin/sh
+
+ACTION="${1:-}"
+RUNTIME_DIR="/tmp/nanopi-control"
+STATE_FILE="$RUNTIME_DIR/modules.json"
+PID_FILE="$RUNTIME_DIR/modules.pid"
+LOCK_DIR="$RUNTIME_DIR/modules.lock"
+FINISHED=0
+
+. /usr/share/libubox/jshn.sh
+
+write_state() {
+	local status="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local tmp="$STATE_FILE.tmp.$$"
+
+	json_init
+	json_add_string module docker
+	json_add_string action "$ACTION"
+	json_add_string status "$status"
+	json_add_int percent "$percent"
+	json_add_boolean running "$running"
+	json_add_boolean success "$success"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$STATE_FILE"
+}
+
+fail() {
+	write_state error 100 0 0 "Операция завершилась с ошибкой" "$1"
+	FINISHED=1
+	exit 1
+}
+
+cleanup() {
+	local rc=$?
+	rm -f "$PID_FILE"
+	rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+	if [ "$rc" -ne 0 ] && [ "$FINISHED" -ne 1 ]; then
+		write_state error 100 0 0 "Операция завершилась с ошибкой" "Непредвиденная ошибка обработчика модулей"
+	fi
+}
+trap cleanup EXIT INT TERM
+
+case "$ACTION" in
+	install)
+		write_state updating 10 1 0 "Обновление списка пакетов" ""
+		apk update || fail "Не удалось обновить список пакетов apk"
+
+		write_state installing 35 1 0 "Установка Docker и веб-интерфейса" ""
+		apk add dockerd docker docker-compose luci-app-dockerman luci-i18n-dockerman-ru || fail "Не удалось установить пакеты Docker"
+
+		write_state enabling 75 1 0 "Включение автозапуска Docker" ""
+		/etc/init.d/dockerd enable || fail "Не удалось включить автозапуск Docker"
+
+		write_state starting 85 1 0 "Запуск Docker" ""
+		/etc/init.d/dockerd start || fail "Не удалось запустить Docker"
+
+		write_state verifying 95 1 0 "Проверка установки Docker" ""
+		attempt=0
+		while [ "$attempt" -lt 15 ]; do
+			docker info >/dev/null 2>&1 && break
+			attempt=$((attempt + 1))
+			sleep 2
+		done
+		docker version >/dev/null 2>&1 || fail "Команда docker недоступна после установки"
+		docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает после запуска"
+
+		rm -f /tmp/luci-indexcache
+		write_state complete 100 0 1 "Docker установлен, запущен и добавлен в автозагрузку" ""
+		;;
+	remove)
+		write_state stopping 15 1 0 "Остановка Docker" ""
+		/etc/init.d/dockerd stop >/dev/null 2>&1 || true
+		/etc/init.d/dockerd disable >/dev/null 2>&1 || true
+
+		write_state removing 45 1 0 "Удаление пакетов Docker" ""
+		apk del luci-i18n-dockerman-ru luci-app-dockerman docker-compose docker dockerd || fail "Не удалось удалить пакеты Docker"
+
+		rm -f /tmp/luci-indexcache
+		write_state complete 100 0 1 "Docker удалён. Данные в /opt/docker сохранены" ""
+		;;
+	*)
+		fail "Неизвестное действие"
+		;;
+esac
+
+FINISHED=1
+sync

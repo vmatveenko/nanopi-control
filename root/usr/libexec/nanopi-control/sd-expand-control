@@ -1,0 +1,173 @@
+#!/bin/sh
+
+RUNTIME_DIR="/tmp/nanopi-control"
+JOB_FILE="$RUNTIME_DIR/sd-expand-job.json"
+LOG_FILE="$RUNTIME_DIR/sd-expand.log"
+PID_FILE="$RUNTIME_DIR/sd-expand.pid"
+LOCK_DIR="$RUNTIME_DIR/migration.lock"
+CHECK_MOUNT="$RUNTIME_DIR/sd-check"
+WORKER="/usr/libexec/nanopi-control/sd-expand-worker"
+DETECT="/usr/libexec/nanopi-control/detect-storage"
+
+. /usr/share/libubox/jshn.sh
+
+mkdir -p "$RUNTIME_DIR"
+
+write_job() {
+	local phase="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local tmp="$JOB_FILE.tmp.$$"
+	json_init
+	json_add_string phase "$phase"
+	json_add_int percent "$percent"
+	json_add_boolean running "$running"
+	json_add_boolean success "$success"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$tmp"
+	mv "$tmp" "$JOB_FILE"
+}
+
+info() {
+	local status sd internal partition sd_name internal_name part_name p1_name
+	local sd_sectors internal_sectors p1_start p1_size part_start current_size
+	local sd_max_size emmc_max_size desired_size fs_kib fs_sectors state
+	local eligible available commands_ready openwrt_ready mounted reason command value current_value
+
+	status="$($DETECT --json)"
+	sd="$(jsonfilter -s "$status" -e '@.sd_device')"
+	internal="$(jsonfilter -s "$status" -e '@.internal_device')"
+	partition="${sd}p2"
+	sd_name="${sd##*/}"
+	internal_name="${internal##*/}"
+	part_name="${partition##*/}"
+	p1_name="${sd_name}p1"
+
+	sd_sectors="$(cat "/sys/class/block/$sd_name/size" 2>/dev/null || true)"
+	internal_sectors="$(cat "/sys/class/block/$internal_name/size" 2>/dev/null || true)"
+	p1_start="$(cat "/sys/class/block/$p1_name/start" 2>/dev/null || true)"
+	p1_size="$(cat "/sys/class/block/$p1_name/size" 2>/dev/null || true)"
+	part_start="$(cat "/sys/class/block/$part_name/start" 2>/dev/null || true)"
+	current_size="$(cat "/sys/class/block/$part_name/size" 2>/dev/null || true)"
+	for value in sd_sectors internal_sectors p1_start p1_size part_start current_size; do
+		eval current_value="\${$value}"
+		case "$current_value" in ''|*[!0-9]*) eval "$value=0" ;; esac
+	done
+
+	sd_max_size=0
+	emmc_max_size=0
+	[ "$sd_sectors" -gt "$part_start" ] && sd_max_size="$((sd_sectors - part_start))"
+	[ "$internal_sectors" -gt "$part_start" ] && emmc_max_size="$((internal_sectors - part_start))"
+	desired_size="$sd_max_size"
+	if [ "$emmc_max_size" -gt 0 ] && [ "$emmc_max_size" -lt "$desired_size" ]; then
+		desired_size="$emmc_max_size"
+	fi
+
+	commands_ready=1
+	for command in parted partprobe e2fsck resize2fs dd mount umount; do
+		command -v "$command" >/dev/null 2>&1 || commands_ready=0
+	done
+
+	mounted=0
+	awk -v device="$partition" '$1 == device { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null && mounted=1
+	openwrt_ready=0
+	fs_kib=0
+	state=""
+	if [ -b "$partition" ] && [ "$mounted" -eq 0 ]; then
+		mkdir -p "$CHECK_MOUNT"
+		if mount -t ext4 -o ro,noload "$partition" "$CHECK_MOUNT" >/dev/null 2>&1; then
+			[ -r "$CHECK_MOUNT/etc/openwrt_release" ] && openwrt_ready=1
+			fs_kib="$(df -Pk "$CHECK_MOUNT" 2>/dev/null | awk 'NR == 2 { print $2 }')"
+			state="$(jsonfilter -i "$CHECK_MOUNT/etc/nanopi-control/sd-expansion-state.json" -e '@.stage' 2>/dev/null)"
+			umount "$CHECK_MOUNT" >/dev/null 2>&1 || true
+		fi
+		rmdir "$CHECK_MOUNT" >/dev/null 2>&1 || true
+	fi
+	case "$fs_kib" in ''|*[!0-9]*) fs_kib=0 ;; esac
+	fs_sectors="$((fs_kib * 2))"
+
+	eligible=1
+	reason="Ready"
+	if [ "$(jsonfilter -s "$status" -e '@.supported')" != "true" ]; then
+		eligible=0; reason="Unsupported device"
+	elif [ "$(jsonfilter -s "$status" -e '@.boot_medium')" != "emmc" ]; then
+		eligible=0; reason="Boot from internal eMMC to expand an SD card"
+	elif [ "$(jsonfilter -s "$status" -e '@.root_device')" != "$internal" ]; then
+		eligible=0; reason="The active root disk is not internal eMMC"
+	elif [ -z "$sd" ] || [ ! -b "$sd" ]; then
+		eligible=0; reason="No SD card is detected"
+	elif [ "$mounted" -eq 1 ]; then
+		eligible=0; reason="The SD system partition is mounted"
+	elif [ "$p1_start" -ne 65536 ] || [ "$p1_size" -ne 32768 ] || [ "$part_start" -ne 131072 ]; then
+		eligible=0; reason="The SD card does not have the expected OpenWrt layout"
+	elif [ "$openwrt_ready" -ne 1 ]; then
+		eligible=0; reason="OpenWrt was not detected on the SD card"
+	elif [ "$commands_ready" -ne 1 ]; then
+		eligible=0; reason="Required system utilities are missing"
+	elif [ "$desired_size" -le 0 ]; then
+		eligible=0; reason="Unable to calculate the target partition size"
+	fi
+
+	available=0
+	if [ "$eligible" -eq 1 ] && { [ "$current_size" -lt "$desired_size" ] || [ "$fs_sectors" -lt "$((desired_size * 9 / 10))" ] || [ -n "$state" ]; }; then
+		available=1
+	elif [ "$eligible" -eq 1 ]; then
+		reason="The SD system partition already matches the target size"
+	fi
+
+	json_init
+	json_add_boolean eligible "$eligible"
+	json_add_boolean available "$available"
+	json_add_boolean commands_ready "$commands_ready"
+	json_add_boolean openwrt_ready "$openwrt_ready"
+	json_add_boolean mounted "$mounted"
+	json_add_string state "$state"
+	json_add_string reason "$reason"
+	json_add_string disk "$sd"
+	json_add_string partition "$partition"
+	json_add_string internal_device "$internal"
+	json_add_int filesystem_size_bytes "$((fs_kib * 1024))"
+	json_add_int partition_size_bytes "$((current_size * 512))"
+	json_add_int target_size_bytes "$((desired_size * 512))"
+	json_add_int desired_size_sectors "$desired_size"
+	json_dump
+}
+
+start_worker() {
+	if [ -d "$LOCK_DIR" ]; then
+		printf '%s\n' '{ "accepted": false, "error": "Another storage operation is already running" }'
+		return 1
+	fi
+	if ! mkdir "$LOCK_DIR"; then
+		printf '%s\n' '{ "accepted": false, "error": "Unable to acquire storage lock" }'
+		return 1
+	fi
+	: > "$LOG_FILE"
+	write_job queued 0 1 0 "Offline SD expansion queued" ""
+	if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -O "$LOG_FILE" -- expand_sd; then
+		rmdir "$LOCK_DIR" 2>/dev/null || true
+		write_job failed 0 0 0 "Unable to start SD expansion" "Worker start failed"
+		printf '%s\n' '{ "accepted": false, "error": "Unable to start SD expansion worker" }'
+		return 1
+	fi
+	printf '%s\n' '{ "accepted": true }'
+}
+
+case "$1" in
+	info) info ;;
+	status)
+		if [ -r "$JOB_FILE" ]; then cat "$JOB_FILE"; else
+			printf '%s\n' '{ "phase": "idle", "percent": 0, "running": false, "success": false, "message": "No SD expansion has been started", "error": "" }'
+		fi
+		;;
+	start)
+		check="$(info)"
+		if [ "$(jsonfilter -s "$check" -e '@.available')" != "true" ]; then
+			printf '{ "accepted": false, "error": "%s" }\n' "$(jsonfilter -s "$check" -e '@.reason')"
+			exit 1
+		fi
+		[ "$2" = "EXPAND_SD" ] || { printf '%s\n' '{ "accepted": false, "error": "SD expansion confirmation is invalid" }'; exit 1; }
+		start_worker
+		;;
+	*) printf '%s\n' '{ "error": "Unknown SD expansion command" }'; exit 1 ;;
+esac

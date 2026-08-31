@@ -46,6 +46,38 @@ const callUpdateStart = rpc.declare({
 	expect: {}
 });
 
+const callSdExpandInfo = rpc.declare({
+	object: 'nanopi-control',
+	method: 'sd_expand_info',
+	expect: {}
+});
+
+const callSdExpandStatus = rpc.declare({
+	object: 'nanopi-control',
+	method: 'sd_expand_status',
+	expect: {}
+});
+
+const callSdExpandStart = rpc.declare({
+	object: 'nanopi-control',
+	method: 'sd_expand_start',
+	params: [ 'confirmation' ],
+	expect: {}
+});
+
+const callModulesStatus = rpc.declare({
+	object: 'nanopi-control',
+	method: 'modules_status',
+	expect: {}
+});
+
+const callModulesStart = rpc.declare({
+	object: 'nanopi-control',
+	method: 'modules_start',
+	params: [ 'module', 'action', 'confirmation' ],
+	expect: {}
+});
+
 function formatBytes(bytes) {
 	let value = Number(bytes || 0);
 	let units = [ _('B'), _('KiB'), _('MiB'), _('GiB'), _('TiB') ];
@@ -68,18 +100,8 @@ function mediumLabel(medium) {
 	}
 }
 
-function badge(title, value, detail, color) {
-	return E('div', {
-		'style': 'border:1px solid #ddd;border-radius:5px;padding:15px;min-height:96px;display:flex;flex-direction:column;justify-content:center'
-	}, [
-		E('div', { 'style': 'font-size:14px;color:#666;margin-bottom:8px' }, title),
-		E('div', { 'style': 'font-size:21px;font-weight:bold;color:%s'.format(color || '#333') }, value),
-		E('div', { 'style': 'font-size:13px;color:#666;margin-top:6px' }, detail || '')
-	]);
-}
-
-function table(rows) {
-	const t = new L.ui.Table([ _('Information'), '' ], {
+function table(rows, columns) {
+	const t = new L.ui.Table(columns || [ _('Information'), '', '' ], {
 		'style': 'width:100%;table-layout:auto'
 	});
 	t.update(rows);
@@ -100,9 +122,180 @@ function activeAddresses(interfaces) {
 	return result.length ? result.join(', ') : _('No active IPv4 addresses');
 }
 
+function sdJobText(text) {
+	const translations = {
+		'Offline SD expansion queued': 'Офлайн-расширение SD-карты поставлено в очередь',
+		'Verifying the offline OpenWrt SD card': 'Проверка отключённой SD-карты с OpenWrt',
+		'Saving the current SD partition table': 'Сохранение текущей таблицы разделов SD-карты',
+		'Expanding the SD system partition': 'Увеличение системного раздела SD-карты',
+		'Checking the offline SD ext4 filesystem': 'Проверка файловой системы ext4',
+		'Expanding the offline SD ext4 filesystem': 'Увеличение отключённой файловой системы ext4',
+		'Verifying the expanded OpenWrt SD card': 'Финальная проверка расширенной SD-карты',
+		'OpenWrt SD card expansion completed.': 'SD-карта с OpenWrt успешно расширена.',
+		'SD expansion failed': 'Не удалось увеличить SD-раздел'
+	};
+	return translations[text] || text || '';
+}
+
+function sdProgress(job) {
+	let percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
+	let color = job.error ? '#b42318' : job.success ? '#16803a' : '#0066cc';
+	return E('div', { 'style': 'min-width:280px' }, [
+		E('div', { 'style': 'display:flex;justify-content:space-between;gap:12px;margin-bottom:5px' }, [
+			E('span', {}, sdJobText(job.message)),
+			E('span', {}, '%d%%'.format(percent))
+		]),
+		E('div', { 'style': 'height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden' }, [
+			E('div', { 'style': 'height:100%;width:' + percent + '%;background:' + color + ';transition:width .3s' })
+		]),
+		job.error ? E('div', { 'style': 'color:#b42318;margin-top:5px' }, sdJobText(job.error)) : ''
+	]);
+}
+
+function moduleJobProgress(job) {
+	let percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
+	let color = job.error ? '#b42318' : job.success ? '#16803a' : '#0066cc';
+	return E('div', { 'style': 'min-width:260px' }, [
+		E('div', { 'style': 'display:flex;justify-content:space-between;gap:12px;margin-bottom:5px' }, [
+			E('span', {}, job.message || 'Выполнение операции'),
+			E('span', {}, '%d%%'.format(percent))
+		]),
+		E('div', { 'style': 'height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden' }, [
+			E('div', { 'style': 'height:100%;width:' + percent + '%;background:' + color + ';transition:width .3s' })
+		]),
+		job.error ? E('div', { 'style': 'color:#b42318;margin-top:5px' }, job.error) : ''
+	]);
+}
+
 return view.extend({
 	load: function() {
-		return Promise.all([ callStatus(), callBoard(), callInfo(), callInterfaces(), callUpdateStatus() ]);
+		return Promise.all([ callStatus(), callBoard(), callInfo(), callInterfaces(), callUpdateStatus(), callSdExpandInfo(), callSdExpandStatus(), callModulesStatus() ]);
+	},
+
+	pollModules: function(container) {
+		const view = this;
+		let timer = window.setInterval(function() {
+			callModulesStatus().then(function(state) {
+				container.replaceChildren(view.renderModules(state, container));
+				if (!state.job || !state.job.running)
+					window.clearInterval(timer);
+			});
+		}, 1000);
+	},
+
+	startModuleAction: function(module, action, confirmation, container) {
+		const view = this;
+		return callModulesStart(module, action, confirmation || '').then(function(result) {
+			if (!result.accepted)
+				throw new Error(result.error || 'Не удалось запустить операцию');
+			container.replaceChildren(view.renderModules({
+				modules: [ { id: 'docker', name: 'Docker', dependencies: [] } ],
+				job: { running: true, percent: 0, message: action === 'install' ? 'Подготовка установки Docker' : 'Подготовка удаления Docker' }
+			}, container));
+			view.pollModules(container);
+		}).catch(function(error) {
+			ui.addNotification(null, E('p', {}, error.message), 'error');
+			return callModulesStatus().then(function(state) {
+				container.replaceChildren(view.renderModules(state, container));
+			});
+		});
+	},
+
+	renderModules: function(state, container) {
+		const view = this;
+		const job = state.job || {};
+		const rows = (state.modules || []).map(function(module) {
+			let status;
+			let action;
+			let dependencies = (module.dependencies || []).length ? module.dependencies.join(', ') : 'Нет';
+
+			if (job.running) {
+				status = moduleJobProgress(job);
+				action = E('button', { 'class': 'btn cbi-button cbi-button-action', 'disabled': true }, 'Выполняется…');
+			}
+			else if (module.installed) {
+				status = E('span', { 'style': 'color:#16803a' }, module.service_running
+					? 'Установлен и запущен'
+					: 'Установлен, служба остановлена');
+				action = E('button', { 'class': 'btn cbi-button cbi-button-negative' }, 'Удалить');
+				action.disabled = !module.can_remove;
+				action.addEventListener('click', ui.createHandlerFn(view, function() {
+					ui.showModal('Удаление Docker', [
+						E('p', {}, 'Пакеты Docker будут удалены. Данные контейнеров в /opt/docker сохранятся.'),
+						E('div', { 'class': 'right' }, [
+							E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
+							' ',
+							E('button', {
+								'class': 'btn cbi-button cbi-button-negative important',
+								'click': ui.createHandlerFn(view, function() {
+									ui.hideModal();
+									return view.startModuleAction('docker', 'remove', 'REMOVE_DOCKER', container);
+								})
+							}, 'Удалить')
+						])
+					]);
+				}));
+			}
+			else {
+				status = job.error
+					? E('span', { 'style': 'color:#b42318' }, job.error)
+					: E('span', {}, 'Не установлен');
+				action = E('button', { 'class': 'btn cbi-button cbi-button-action' }, 'Установить');
+				action.disabled = !module.can_install;
+				if (module.can_install) {
+					action.addEventListener('click', ui.createHandlerFn(view, function() {
+						action.disabled = true;
+						return view.startModuleAction('docker', 'install', '', container);
+					}));
+				}
+			}
+
+			if (module.blocked_reason)
+				status = E('span', { 'style': 'color:#d97706' }, module.blocked_reason);
+
+			return [ module.name || module.id, status, dependencies, action ];
+		});
+
+		return table(rows, [ 'Модуль', 'Состояние', 'Зависимости', 'Действие' ]);
+	},
+
+	pollSdExpansion: function(container) {
+		let timer = window.setInterval(function() {
+			callSdExpandStatus().then(function(job) {
+				container.replaceChildren(sdProgress(job));
+				if (!job.running) {
+					window.clearInterval(timer);
+					window.setTimeout(function() { window.location.reload(); }, 1300);
+				}
+			});
+		}, 1000);
+	},
+
+	renderSdExpansion: function(expansion, job, container) {
+		const view = this;
+		if (job.running) {
+			window.setTimeout(function() { view.pollSdExpansion(container); }, 0);
+			return sdProgress(job);
+		}
+		if (!expansion.available)
+			return E('span', { 'style': 'color:#16803a' }, 'Расширение не требуется');
+
+		const button = E('button', {
+			'class': 'cbi-button cbi-button-action important'
+		}, 'Увеличить до %s'.format(formatBytes(expansion.target_size_bytes)));
+		button.addEventListener('click', ui.createHandlerFn(this, function() {
+			button.disabled = true;
+			return callSdExpandStart('EXPAND_SD').then(function(result) {
+				if (!result.accepted)
+					throw new Error(result.error || 'Не удалось запустить расширение SD-раздела');
+				container.replaceChildren(sdProgress({ percent: 0, running: true, message: 'Offline SD expansion queued' }));
+				view.pollSdExpansion(container);
+			}).catch(function(error) {
+				ui.addNotification(null, E('p', {}, error.message), 'error');
+				button.disabled = false;
+			});
+		}));
+		return button;
 	},
 
 	renderUpdate: function(update, container) {
@@ -174,10 +367,12 @@ return view.extend({
 		const info = data[2] || {};
 		const interfaces = data[3] || [];
 		const update = data[4] || {};
+		const sdExpansion = data[5] || {};
+		const sdJob = data[6] || {};
+		const modules = data[7] || {};
 		const internalPresent = !!status.internal_device;
-		const transferReady = !!status.transfer_available;
-		const expansionReady = !!status.expand_available;
 		const rootBytes = Number(status.root_total_kib || 0) * 1024;
+		const rootUsedBytes = Number(status.root_used_kib || 0) * 1024;
 		const freeBytes = Number(status.root_available_kib || 0) * 1024;
 		const memory = info.memory || {};
 		const release = board.release || {};
@@ -193,36 +388,42 @@ return view.extend({
 				_('This device is not recognized as a FriendlyElec NanoPi R5S. Migration operations are unavailable.')));
 		}
 
-		root.appendChild(E('div', {
-			'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin:18px 0'
-		}, [
-			badge(_('Boot source'), mediumLabel(status.boot_medium), status.root_partition || '-', status.boot_medium === 'sd' ? '#d97706' : '#16803a'),
-			badge(_('Internal storage'), internalPresent ? _('Detected') : _('Not detected'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : '-', internalPresent ? '#16803a' : '#b42318'),
-			badge(_('System partition'), formatBytes(rootBytes), _('Available: %s').format(formatBytes(freeBytes)), '#0066cc'),
-			badge(_('Transfer'), transferReady ? _('Available') : expansionReady ? _('Continue') : _('Not required'), transferReady ? _('The system is running from an SD card') : expansionReady ? _('Internal storage expansion is pending') : _('The system is not running from an SD card'), transferReady || expansionReady ? '#d97706' : '#16803a')
-		]));
-
 		root.appendChild(E('h3', {}, _('System information')));
-		root.appendChild(table([
-			[ _('Model'), board.model || status.model || '-' ],
-			[ _('Board'), board.board_name || status.board_name || '-' ],
-			[ _('OpenWrt version'), release.description || release.version || '-' ],
-			[ _('Kernel version'), board.kernel || '-' ],
-			[ _('NanoPi Control version'), status.module_version || '-' ],
-			[ _('Active IPv4 addresses'), activeAddresses(interfaces) ],
-			[ _('Memory'), '%s / %s'.format(formatBytes(memory.available || memory.free), formatBytes(memory.total)) ]
-		]));
+		const sdExpansionHint = status.boot_medium === 'sd' &&
+			Number(sdExpansion.target_size_bytes || 0) > 0 &&
+			rootBytes < Number(sdExpansion.target_size_bytes) * 0.9
+			? E('span', { 'style': 'color:#d97706' },
+				'Для увеличения загрузитесь с eMMC и после загрузки вставьте SD-карту.')
+			: '';
+		const systemRows = [
+			[ _('Model'), board.model || status.model || '-', '' ],
+			[ _('Board'), board.board_name || status.board_name || '-', '' ],
+			[ _('OpenWrt version'), release.description || release.version || '-', '' ],
+			[ _('Kernel version'), board.kernel || '-', '' ],
+			[ _('NanoPi Control version'), status.module_version || '-', '' ],
+			[ _('Boot source'), '%s · %s'.format(mediumLabel(status.boot_medium), status.root_device || '-'), '' ],
+			[ _('Internal storage'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : _('Not detected'), '' ],
+			[ _('System partition'), '%s · %s · %s занято из %s · %s свободно'.format(status.root_partition || '-', status.root_filesystem || '-', formatBytes(rootUsedBytes), formatBytes(rootBytes), formatBytes(freeBytes)), sdExpansionHint ],
+			[ _('Active IPv4 addresses'), activeAddresses(interfaces), '' ],
+			[ _('Memory'), '%s / %s'.format(formatBytes(memory.available || memory.free), formatBytes(memory.total)), '' ]
+		];
+		if (sdExpansion.eligible) {
+			const sdActionContainer = E('div');
+			sdActionContainer.appendChild(this.renderSdExpansion(sdExpansion, sdJob, sdActionContainer));
+			systemRows.splice(systemRows.length - 2, 0, [
+				'SD-карта с OpenWrt',
+				'%s · ext4 · %s · целевой размер %s'.format(sdExpansion.partition || '-', formatBytes(sdExpansion.filesystem_size_bytes), formatBytes(sdExpansion.target_size_bytes)),
+				sdActionContainer
+			]);
+		}
+		root.appendChild(table(systemRows));
 
-		root.appendChild(E('h3', { 'style': 'margin-top:20px' }, _('Storage information')));
-		root.appendChild(table([
-			[ _('Root device'), status.root_device || '-' ],
-			[ _('Root partition'), status.root_partition || '-' ],
-			[ _('Root filesystem'), status.root_filesystem || '-' ],
-			[ _('Root partition size'), formatBytes(rootBytes) ],
-			[ _('Root partition available'), formatBytes(freeBytes) ],
-			[ _('SD card'), status.sd_device ? '%s · %s'.format(status.sd_device, formatBytes(status.sd_size)) : _('Not detected') ],
-			[ _('Internal eMMC'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : _('Not detected') ]
-		]));
+		root.appendChild(E('h3', { 'style': 'margin-top:20px' }, 'Модули'));
+		const modulesContainer = E('div');
+		modulesContainer.appendChild(this.renderModules(modules, modulesContainer));
+		root.appendChild(modulesContainer);
+		if (modules.job && modules.job.running)
+			window.setTimeout(this.pollModules.bind(this, modulesContainer), 0);
 
 		root.appendChild(E('h3', { 'style': 'margin-top:20px' }, _('NanoPi Control updates')));
 		const updateContainer = E('div');

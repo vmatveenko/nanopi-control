@@ -1,0 +1,173 @@
+#!/bin/sh
+
+RUNTIME_DIR="/tmp/nanopi-control"
+STATE_FILE="$RUNTIME_DIR/modules.json"
+PID_FILE="$RUNTIME_DIR/modules.pid"
+LOCK_DIR="$RUNTIME_DIR/modules.lock"
+WORKER="/usr/libexec/nanopi-control/modules-worker"
+MIN_FREE_KIB=524288
+
+. /usr/share/libubox/jshn.sh
+
+mkdir -p "$RUNTIME_DIR"
+
+package_installed() {
+	apk info -e "$1" >/dev/null 2>&1
+}
+
+docker_installed() {
+	package_installed dockerd &&
+		package_installed docker &&
+		package_installed docker-compose &&
+		package_installed luci-app-dockerman &&
+		package_installed luci-i18n-dockerman-ru
+}
+
+docker_running() {
+	[ -x /etc/init.d/dockerd ] && /etc/init.d/dockerd running >/dev/null 2>&1
+}
+
+docker_enabled() {
+	[ -x /etc/init.d/dockerd ] && /etc/init.d/dockerd enabled >/dev/null 2>&1
+}
+
+free_kib() {
+	df -Pk / 2>/dev/null | awk 'NR == 2 { print $4 + 0 }'
+}
+
+add_job() {
+	local running status action percent message error success
+
+	json_add_object job
+	if [ -r "$STATE_FILE" ]; then
+		running="$(jsonfilter -i "$STATE_FILE" -e '@.running' 2>/dev/null)"
+		status="$(jsonfilter -i "$STATE_FILE" -e '@.status' 2>/dev/null)"
+		action="$(jsonfilter -i "$STATE_FILE" -e '@.action' 2>/dev/null)"
+		percent="$(jsonfilter -i "$STATE_FILE" -e '@.percent' 2>/dev/null)"
+		message="$(jsonfilter -i "$STATE_FILE" -e '@.message' 2>/dev/null)"
+		error="$(jsonfilter -i "$STATE_FILE" -e '@.error' 2>/dev/null)"
+		success="$(jsonfilter -i "$STATE_FILE" -e '@.success' 2>/dev/null)"
+		[ "$running" = "true" ] && json_add_boolean running 1 || json_add_boolean running 0
+		[ "$success" = "true" ] && json_add_boolean success 1 || json_add_boolean success 0
+		json_add_string status "${status:-idle}"
+		json_add_string action "${action:-}"
+		json_add_int percent "${percent:-0}"
+		json_add_string message "${message:-}"
+		json_add_string error "${error:-}"
+	else
+		json_add_boolean running 0
+		json_add_boolean success 0
+		json_add_string status idle
+		json_add_string action ""
+		json_add_int percent 0
+		json_add_string message ""
+		json_add_string error ""
+	fi
+	json_close_object
+}
+
+status() {
+	local installed=0 running=0 enabled=0 can_install=0 can_remove=0 reason="" free
+
+	docker_installed && installed=1
+	docker_running && running=1
+	docker_enabled && enabled=1
+	free="$(free_kib)"
+	case "$free" in ''|*[!0-9]*) free=0 ;; esac
+
+	if [ "$installed" -eq 1 ]; then
+		can_remove=1
+	elif [ "$(uname -m)" != "aarch64" ]; then
+		reason="Docker доступен только для архитектуры aarch64"
+	elif [ "$free" -lt "$MIN_FREE_KIB" ]; then
+		reason="Недостаточно места: требуется не менее 512 МиБ свободного пространства"
+	else
+		can_install=1
+	fi
+
+	json_init
+	json_add_array modules
+	json_add_object ""
+	json_add_string id docker
+	json_add_string name Docker
+	json_add_boolean installed "$installed"
+	json_add_boolean service_running "$running"
+	json_add_boolean service_enabled "$enabled"
+	json_add_boolean can_install "$can_install"
+	json_add_boolean can_remove "$can_remove"
+	json_add_string blocked_reason "$reason"
+	json_add_array dependencies
+	json_close_array
+	json_add_array missing_dependencies
+	json_close_array
+	json_close_object
+	json_close_array
+	add_job
+	json_dump
+}
+
+start_job() {
+	local action="$1" confirmation="$2"
+
+	if [ -d "$LOCK_DIR" ]; then
+		printf '%s\n' '{ "accepted": false, "error": "Операция с модулями уже выполняется" }'
+		exit 1
+	fi
+
+	case "$action" in
+		install)
+			if docker_installed; then
+				printf '%s\n' '{ "accepted": false, "error": "Docker уже установлен" }'
+				exit 1
+			fi
+			if [ "$(uname -m)" != "aarch64" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Неподдерживаемая архитектура" }'
+				exit 1
+			fi
+			free="$(free_kib)"
+			case "$free" in ''|*[!0-9]*) free=0 ;; esac
+			if [ "$free" -lt "$MIN_FREE_KIB" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Недостаточно свободного места" }'
+				exit 1
+			fi
+			;;
+		remove)
+			if [ "$confirmation" != "REMOVE_DOCKER" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Удаление Docker не подтверждено" }'
+				exit 1
+			fi
+			if ! docker_installed; then
+				printf '%s\n' '{ "accepted": false, "error": "Docker не установлен" }'
+				exit 1
+			fi
+			;;
+		*)
+			printf '%s\n' '{ "accepted": false, "error": "Неизвестное действие" }'
+			exit 1
+			;;
+	esac
+
+	if ! mkdir "$LOCK_DIR"; then
+		printf '%s\n' '{ "accepted": false, "error": "Не удалось заблокировать операцию" }'
+		exit 1
+	fi
+	if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -- "$action"; then
+		rmdir "$LOCK_DIR" 2>/dev/null || true
+		printf '%s\n' '{ "accepted": false, "error": "Не удалось запустить операцию" }'
+		exit 1
+	fi
+	printf '%s\n' '{ "accepted": true }'
+}
+
+case "$1" in
+	status)
+		status
+		;;
+	start)
+		start_job "$2" "$3"
+		;;
+	*)
+		printf '%s\n' '{ "error": "Неизвестная команда управления модулями" }'
+		exit 1
+		;;
+esac

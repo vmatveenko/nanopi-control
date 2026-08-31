@@ -22,6 +22,12 @@ self-updates from GitHub Releases.
   NanoPi Control itself;
 - verification of the copied boot partition and ext4 filesystem;
 - post-boot expansion of partition 2 and ext4 to the full eMMC capacity;
+- offline expansion of an inserted OpenWrt SD card while booted from eMMC,
+  capped at the usable eMMC size so the card remains transferable;
+- a dependency-aware modules table with background installation, progress and
+  removal actions;
+- one-click Docker Engine, Compose, Dockerman and Russian Dockerman
+  localization installation;
 - GitHub release check and one-click package update;
 - Russian LuCI translation.
 
@@ -35,6 +41,33 @@ self-updates from GitHub Releases.
 
 The package installs these runtime dependencies automatically: `parted`,
 `e2fsprogs`, `rsync`, `ca-bundle` and `uclient-fetch`.
+
+## Modules
+
+The **Overview** page contains a modules table. The first available module is
+Docker. Installation runs in the background and installs `dockerd`, `docker`,
+`docker-compose`, `luci-app-dockerman` and
+`luci-i18n-dockerman-ru`, then enables and starts `dockerd` and verifies the
+engine with `docker info`.
+
+Docker installation is offered on `aarch64` systems with at least 512 MiB of
+free root filesystem space. Removing the module removes its packages but keeps
+Docker data in `/opt/docker`.
+
+Future container modules can declare Docker as a dependency. Dependencies are
+shown to the user and are not installed implicitly by NanoPi Control.
+
+## Expanding an OpenWrt SD card
+
+When the NanoPi is booted from eMMC, inserting an unmounted SD card with the
+expected OpenWrt ext4 layout adds an SD-card row to **System information**. The
+expansion action grows partition 2 and its ext4 filesystem offline. The target
+size is the smaller of the usable SD-card capacity and usable eMMC capacity,
+which keeps the resulting system suitable for a later SD → eMMC transfer.
+
+When booted from the SD card itself, NanoPi Control shows a hint to boot from
+eMMC and insert the card before expansion. It never attempts to resize the
+active SD root filesystem.
 
 ## Installation from GitHub Release
 
