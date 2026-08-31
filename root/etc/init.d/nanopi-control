@@ -6,6 +6,7 @@ STOP=89
 start() {
 	mkdir -p /etc/nanopi-control /tmp/nanopi-control
 	/usr/libexec/nanopi-control/detect-storage >/dev/null 2>&1
+	/usr/libexec/nanopi-control/modules-control sync-menu >/dev/null 2>&1
 	rm -f /tmp/luci-indexcache
 }
 

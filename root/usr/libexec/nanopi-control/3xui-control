@@ -1,0 +1,114 @@
+#!/bin/sh
+
+CONTAINER="3x-ui"
+MARKER="/etc/nanopi-control/3x-ui-installed"
+
+. /usr/share/libubox/jshn.sh
+
+docker_ready() {
+	command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+container_exists() {
+	docker_ready && docker container inspect "$CONTAINER" >/dev/null 2>&1
+}
+
+clear_luci_cache() {
+	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache
+}
+
+status() {
+	local id state running image created started restart_policy network_mode version fail2ban
+
+	if ! container_exists; then
+		if docker_ready && [ -e "$MARKER" ]; then
+			rm -f "$MARKER"
+			clear_luci_cache
+		fi
+		json_init
+		json_add_boolean installed 0
+		json_add_boolean running 0
+		json_add_string state absent
+		json_add_string error "Контейнер 3x-ui не найден"
+		json_dump
+		return
+	fi
+
+	id="$(docker container inspect -f '{{.Id}}' "$CONTAINER" 2>/dev/null | cut -c1-12)"
+	state="$(docker container inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
+	image="$(docker container inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null)"
+	created="$(docker container inspect -f '{{.Created}}' "$CONTAINER" 2>/dev/null)"
+	started="$(docker container inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null)"
+	restart_policy="$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$CONTAINER" 2>/dev/null)"
+	network_mode="$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER" 2>/dev/null)"
+	running=0
+	[ "$state" = "running" ] && running=1
+	version=""
+	if [ "$running" -eq 1 ]; then
+		version="$(docker exec "$CONTAINER" /app/x-ui -v 2>&1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+	fi
+	fail2ban="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null | awk -F= '$1 == "XUI_ENABLE_FAIL2BAN" { print $2; exit }')"
+
+	json_init
+	json_add_boolean installed 1
+	json_add_boolean running "$running"
+	json_add_string state "${state:-unknown}"
+	json_add_string container_id "$id"
+	json_add_string image "$image"
+	json_add_string version "$version"
+	json_add_string created "$created"
+	json_add_string started_at "$started"
+	json_add_string restart_policy "$restart_policy"
+	json_add_string network_mode "$network_mode"
+	json_add_string fail2ban "${fail2ban:-false}"
+	json_add_string panel_port 2053
+	json_add_string data_path /opt/3x-ui
+	json_add_string error ""
+	json_dump
+}
+
+action() {
+	local requested="$1"
+
+	container_exists || {
+		printf '%s\n' '{ "accepted": false, "error": "Контейнер 3x-ui не найден" }'
+		exit 1
+	}
+
+	case "$requested" in
+		start)
+			docker container start "$CONTAINER" >/dev/null || {
+				printf '%s\n' '{ "accepted": false, "error": "Не удалось запустить 3x-ui" }'
+				exit 1
+			}
+			;;
+		stop)
+			docker container stop -t 10 "$CONTAINER" >/dev/null || {
+				printf '%s\n' '{ "accepted": false, "error": "Не удалось остановить 3x-ui" }'
+				exit 1
+			}
+			;;
+		restart)
+			docker container restart -t 10 "$CONTAINER" >/dev/null || {
+				printf '%s\n' '{ "accepted": false, "error": "Не удалось перезапустить 3x-ui" }'
+				exit 1
+			}
+			;;
+		*)
+			printf '%s\n' '{ "accepted": false, "error": "Неизвестное действие с 3x-ui" }'
+			exit 1
+			;;
+	esac
+
+	printf '%s\n' '{ "accepted": true }'
+}
+
+case "$1" in
+	status) status ;;
+	action) action "$2" ;;
+	*)
+		printf '%s\n' '{ "error": "Неизвестная команда управления 3x-ui" }'
+		exit 1
+		;;
+esac

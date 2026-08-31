@@ -2,7 +2,7 @@
 
 case "$1" in
 	list)
-		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
+		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "xui_status": {}, "xui_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
 		;;
 	call)
 		payload="$(cat)"
@@ -49,11 +49,19 @@ case "$1" in
 				module="$(jsonfilter -s "$payload" -e '@.module' 2>/dev/null)"
 				action="$(jsonfilter -s "$payload" -e '@.action' 2>/dev/null)"
 				confirmation="$(jsonfilter -s "$payload" -e '@.confirmation' 2>/dev/null)"
-				[ "$module" = "docker" ] || {
+				case "$module" in docker|3x-ui) ;; *)
 					printf '%s\n' '{ "accepted": false, "error": "Неизвестный модуль" }'
 					exit 1
-				}
-				exec /usr/libexec/nanopi-control/modules-control start "$action" "$confirmation"
+					;;
+				esac
+				exec /usr/libexec/nanopi-control/modules-control start "$module" "$action" "$confirmation"
+				;;
+			xui_status)
+				exec /usr/libexec/nanopi-control/3xui-control status
+				;;
+			xui_action)
+				action="$(jsonfilter -s "$payload" -e '@.action' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/3xui-control action "$action"
 				;;
 			update_check)
 				exec /usr/libexec/nanopi-control/update-control check

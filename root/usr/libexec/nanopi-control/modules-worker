@@ -1,11 +1,17 @@
 #!/bin/sh
 
-ACTION="${1:-}"
+MODULE="${1:-}"
+ACTION="${2:-}"
 RUNTIME_DIR="/tmp/nanopi-control"
 STATE_FILE="$RUNTIME_DIR/modules.json"
 PID_FILE="$RUNTIME_DIR/modules.pid"
 LOCK_DIR="$RUNTIME_DIR/modules.lock"
+XUI_IMAGE="ghcr.io/mhsanaei/3x-ui:latest"
+XUI_CONTAINER="3x-ui"
+XUI_DATA_DIR="/opt/3x-ui"
+XUI_MARKER="/etc/nanopi-control/3x-ui-installed"
 FINISHED=0
+XUI_CREATED=0
 
 . /usr/share/libubox/jshn.sh
 
@@ -14,7 +20,7 @@ write_state() {
 	local tmp="$STATE_FILE.tmp.$$"
 
 	json_init
-	json_add_string module docker
+	json_add_string module "$MODULE"
 	json_add_string action "$ACTION"
 	json_add_string status "$status"
 	json_add_int percent "$percent"
@@ -27,7 +33,32 @@ write_state() {
 	mv "$tmp" "$STATE_FILE"
 }
 
+clear_luci_cache() {
+	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache
+}
+
+refresh_luci_menu() {
+	clear_luci_cache
+	/etc/init.d/uhttpd reload >/dev/null 2>&1 || true
+}
+
+remove_xui_data() {
+	rm -rf /opt/3x-ui/db /opt/3x-ui/cert
+	rmdir /opt/3x-ui >/dev/null 2>&1 || true
+}
+
+xui_default_port_in_use() {
+	command -v ss >/dev/null 2>&1 || return 1
+	ss -lnt 2>/dev/null | awk 'NR > 1 { address = $4; sub(/^.*:/, "", address); if (address == "2053") found = 1 } END { exit !found }'
+}
+
 fail() {
+	if [ "$MODULE:$ACTION" = "3x-ui:install" ] && [ "$XUI_CREATED" -eq 1 ]; then
+		docker container rm -f "$XUI_CONTAINER" >/dev/null 2>&1 || true
+		remove_xui_data
+		rm -f "$XUI_MARKER"
+	fi
 	write_state error 100 0 0 "Операция завершилась с ошибкой" "$1"
 	FINISHED=1
 	exit 1
@@ -43,47 +74,116 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-case "$ACTION" in
-	install)
-		write_state updating 10 1 0 "Обновление списка пакетов" ""
-		apk update || fail "Не удалось обновить список пакетов apk"
+install_docker() {
+	write_state updating 10 1 0 "Обновление списка пакетов" ""
+	apk update || fail "Не удалось обновить список пакетов apk"
 
-		write_state installing 35 1 0 "Установка Docker и веб-интерфейса" ""
-		apk add dockerd docker docker-compose luci-app-dockerman luci-i18n-dockerman-ru || fail "Не удалось установить пакеты Docker"
+	write_state installing 35 1 0 "Установка Docker и веб-интерфейса" ""
+	apk add dockerd docker docker-compose luci-app-dockerman luci-i18n-dockerman-ru || fail "Не удалось установить пакеты Docker"
 
-		write_state enabling 75 1 0 "Включение автозапуска Docker" ""
-		/etc/init.d/dockerd enable || fail "Не удалось включить автозапуск Docker"
+	write_state enabling 75 1 0 "Включение автозапуска Docker" ""
+	/etc/init.d/dockerd enable || fail "Не удалось включить автозапуск Docker"
 
-		write_state starting 85 1 0 "Запуск Docker" ""
-		/etc/init.d/dockerd start || fail "Не удалось запустить Docker"
+	write_state starting 85 1 0 "Запуск Docker" ""
+	/etc/init.d/dockerd start || fail "Не удалось запустить Docker"
 
-		write_state verifying 95 1 0 "Проверка установки Docker" ""
-		attempt=0
-		while [ "$attempt" -lt 15 ]; do
-			docker info >/dev/null 2>&1 && break
-			attempt=$((attempt + 1))
-			sleep 2
-		done
-		docker version >/dev/null 2>&1 || fail "Команда docker недоступна после установки"
-		docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает после запуска"
+	write_state verifying 95 1 0 "Проверка установки Docker" ""
+	attempt=0
+	while [ "$attempt" -lt 15 ]; do
+		docker info >/dev/null 2>&1 && break
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+	docker version >/dev/null 2>&1 || fail "Команда docker недоступна после установки"
+	docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает после запуска"
 
-		rm -f /tmp/luci-indexcache
-		write_state complete 100 0 1 "Docker установлен, запущен и добавлен в автозагрузку" ""
-		;;
-	remove)
-		write_state stopping 15 1 0 "Остановка Docker" ""
-		/etc/init.d/dockerd stop >/dev/null 2>&1 || true
-		/etc/init.d/dockerd disable >/dev/null 2>&1 || true
+	clear_luci_cache
+	write_state complete 100 0 1 "Docker установлен, запущен и добавлен в автозагрузку" ""
+}
 
-		write_state removing 45 1 0 "Удаление пакетов Docker" ""
-		apk del luci-i18n-dockerman-ru luci-app-dockerman docker-compose docker dockerd || fail "Не удалось удалить пакеты Docker"
+remove_docker() {
+	docker container inspect "$XUI_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль 3x-ui"
 
-		rm -f /tmp/luci-indexcache
-		write_state complete 100 0 1 "Docker удалён. Данные в /opt/docker сохранены" ""
-		;;
-	*)
-		fail "Неизвестное действие"
-		;;
+	write_state stopping 15 1 0 "Остановка Docker" ""
+	/etc/init.d/dockerd stop >/dev/null 2>&1 || true
+	/etc/init.d/dockerd disable >/dev/null 2>&1 || true
+
+	write_state removing 45 1 0 "Удаление пакетов Docker" ""
+	apk del luci-i18n-dockerman-ru luci-app-dockerman docker-compose docker dockerd || fail "Не удалось удалить пакеты Docker"
+
+	clear_luci_cache
+	write_state complete 100 0 1 "Docker удалён. Данные в /opt/docker сохранены" ""
+}
+
+install_xui() {
+	docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает"
+	docker container inspect "$XUI_CONTAINER" >/dev/null 2>&1 && fail "Контейнер 3x-ui уже существует"
+	[ ! -d "$XUI_DATA_DIR/db" ] && [ ! -d "$XUI_DATA_DIR/cert" ] || fail "Обнаружены данные предыдущей установки 3x-ui"
+	xui_default_port_in_use && fail "Порт панели 2053 уже занят"
+
+	write_state preparing 10 1 0 "Подготовка каталогов 3x-ui" ""
+	mkdir -p "$XUI_DATA_DIR/db" "$XUI_DATA_DIR/cert" || fail "Не удалось создать каталоги данных 3x-ui"
+	XUI_CREATED=1
+
+	write_state downloading 25 1 0 "Загрузка образа 3x-ui" ""
+	docker image pull "$XUI_IMAGE" || fail "Не удалось загрузить образ 3x-ui"
+
+	write_state starting 75 1 0 "Создание и запуск контейнера 3x-ui" ""
+	docker run -d \
+		--name "$XUI_CONTAINER" \
+		--restart=unless-stopped \
+		--network=host \
+		--cap-add=NET_ADMIN \
+		--cap-add=NET_RAW \
+		-e XRAY_VMESS_AEAD_FORCED=false \
+		-e XUI_ENABLE_FAIL2BAN=false \
+		-v "$XUI_DATA_DIR/db:/etc/x-ui" \
+		-v "$XUI_DATA_DIR/cert:/root/cert" \
+		"$XUI_IMAGE" >/dev/null || fail "Не удалось создать контейнер 3x-ui"
+
+	write_state verifying 90 1 0 "Проверка запуска 3x-ui" ""
+	attempt=0
+	while [ "$attempt" -lt 20 ]; do
+		[ "$(docker container inspect -f '{{.State.Running}}' "$XUI_CONTAINER" 2>/dev/null)" = "true" ] && break
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+	[ "$(docker container inspect -f '{{.State.Running}}' "$XUI_CONTAINER" 2>/dev/null)" = "true" ] || fail "Контейнер 3x-ui не перешёл в состояние running"
+	docker exec "$XUI_CONTAINER" /app/x-ui -v >/dev/null 2>&1 || fail "Не удалось проверить версию 3x-ui"
+	[ "$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$XUI_CONTAINER" 2>/dev/null)" = "host" ] || fail "Контейнер 3x-ui запущен не в сети host"
+
+	mkdir -p "${XUI_MARKER%/*}"
+	: > "$XUI_MARKER"
+	XUI_CREATED=0
+	write_state complete 100 0 1 "3x-ui установлен и запущен с настройками по умолчанию" ""
+	refresh_luci_menu
+}
+
+remove_xui() {
+	write_state stopping 15 1 0 "Остановка и удаление контейнера 3x-ui" ""
+	if docker info >/dev/null 2>&1; then
+		docker container rm -f "$XUI_CONTAINER" >/dev/null 2>&1 || true
+	fi
+
+	write_state removing 55 1 0 "Удаление настроек и данных 3x-ui" ""
+	remove_xui_data
+	rm -f "$XUI_MARKER"
+
+	write_state cleanup 80 1 0 "Удаление образа 3x-ui" ""
+	if docker info >/dev/null 2>&1; then
+		docker image rm "$XUI_IMAGE" >/dev/null 2>&1 || true
+	fi
+
+	write_state complete 100 0 1 "3x-ui и все его настройки полностью удалены" ""
+	refresh_luci_menu
+}
+
+case "$MODULE:$ACTION" in
+	docker:install) install_docker ;;
+	docker:remove) remove_docker ;;
+	3x-ui:install) install_xui ;;
+	3x-ui:remove) remove_xui ;;
+	*) fail "Неизвестное действие" ;;
 esac
 
 FINISHED=1

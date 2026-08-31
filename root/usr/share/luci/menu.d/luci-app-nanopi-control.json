@@ -22,7 +22,7 @@
 	},
 	"admin/services/nanopi-control/transfer": {
 		"title": "SD to eMMC",
-		"order": 2,
+		"order": 3,
 		"action": {
 			"type": "view",
 			"path": "nanopi-control/emmc"
@@ -31,6 +31,20 @@
 			"acl": [ "luci-app-nanopi-control" ],
 			"fs": {
 				"/tmp/nanopi-control/show-transfer": "file"
+			}
+		}
+	},
+	"admin/services/nanopi-control/3x-ui": {
+		"title": "3x-ui",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "nanopi-control/3xui"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/etc/nanopi-control/3x-ui-installed": "file"
 			}
 		}
 	}

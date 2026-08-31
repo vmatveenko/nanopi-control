@@ -177,8 +177,13 @@ return view.extend({
 		let timer = window.setInterval(function() {
 			callModulesStatus().then(function(state) {
 				container.replaceChildren(view.renderModules(state, container));
-				if (!state.job || !state.job.running)
+				if (!state.job || !state.job.running) {
 					window.clearInterval(timer);
+					if (state.job && state.job.module === '3x-ui' && state.job.success)
+						window.setTimeout(function() {
+							window.location.href = window.location.pathname + '?refresh=' + Date.now();
+						}, 700);
+				}
 			});
 		}, 1000);
 	},
@@ -188,10 +193,11 @@ return view.extend({
 		return callModulesStart(module, action, confirmation || '').then(function(result) {
 			if (!result.accepted)
 				throw new Error(result.error || 'Не удалось запустить операцию');
-			container.replaceChildren(view.renderModules({
-				modules: [ { id: 'docker', name: 'Docker', dependencies: [] } ],
-				job: { running: true, percent: 0, message: action === 'install' ? 'Подготовка установки Docker' : 'Подготовка удаления Docker' }
-			}, container));
+			container.replaceChildren(moduleJobProgress({
+				running: true,
+				percent: 0,
+				message: '%s %s'.format(action === 'install' ? 'Подготовка установки' : 'Подготовка удаления', module === 'docker' ? 'Docker' : '3x-ui')
+			}));
 			view.pollModules(container);
 		}).catch(function(error) {
 			ui.addNotification(null, E('p', {}, error.message), 'error');
@@ -209,7 +215,7 @@ return view.extend({
 			let action;
 			let dependencies = (module.dependencies || []).length ? module.dependencies.join(', ') : 'Нет';
 
-			if (job.running) {
+			if (job.running && job.module === module.id) {
 				status = moduleJobProgress(job);
 				action = E('button', { 'class': 'btn cbi-button cbi-button-action', 'disabled': true }, 'Выполняется…');
 			}
@@ -219,9 +225,13 @@ return view.extend({
 					: 'Установлен, служба остановлена');
 				action = E('button', { 'class': 'btn cbi-button cbi-button-negative' }, 'Удалить');
 				action.disabled = !module.can_remove;
-				action.addEventListener('click', ui.createHandlerFn(view, function() {
-					ui.showModal('Удаление Docker', [
-						E('p', {}, 'Пакеты Docker будут удалены. Данные контейнеров в /opt/docker сохранятся.'),
+				if (module.can_remove) action.addEventListener('click', ui.createHandlerFn(view, function() {
+					const isDocker = module.id === 'docker';
+					ui.showModal('Удаление ' + (isDocker ? 'Docker' : '3x-ui'), [
+						E('p', {}, isDocker
+							? 'Пакеты Docker будут удалены. Данные контейнеров в /opt/docker сохранятся.'
+							: 'Контейнер, образ, база данных, сертификаты и все настройки 3x-ui будут полностью удалены.'),
+						!isDocker ? E('p', { 'style': 'color:#b42318' }, 'После повторной установки 3x-ui будет запущен с настройками по умолчанию.') : '',
 						E('div', { 'class': 'right' }, [
 							E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
 							' ',
@@ -229,7 +239,7 @@ return view.extend({
 								'class': 'btn cbi-button cbi-button-negative important',
 								'click': ui.createHandlerFn(view, function() {
 									ui.hideModal();
-									return view.startModuleAction('docker', 'remove', 'REMOVE_DOCKER', container);
+									return view.startModuleAction(module.id, 'remove', isDocker ? 'REMOVE_DOCKER' : 'REMOVE_3X_UI', container);
 								})
 							}, 'Удалить')
 						])
@@ -237,7 +247,7 @@ return view.extend({
 				}));
 			}
 			else {
-				status = job.error
+				status = job.error && job.module === module.id
 					? E('span', { 'style': 'color:#b42318' }, job.error)
 					: E('span', {}, 'Не установлен');
 				action = E('button', { 'class': 'btn cbi-button cbi-button-action' }, 'Установить');
@@ -245,13 +255,18 @@ return view.extend({
 				if (module.can_install) {
 					action.addEventListener('click', ui.createHandlerFn(view, function() {
 						action.disabled = true;
-						return view.startModuleAction('docker', 'install', '', container);
+						return view.startModuleAction(module.id, 'install', '', container);
 					}));
 				}
 			}
 
-			if (module.blocked_reason)
-				status = E('span', { 'style': 'color:#d97706' }, module.blocked_reason);
+			if (job.running && job.module !== module.id)
+				action.disabled = true;
+
+			if (module.blocked_reason) status = E('div', {}, [
+				status,
+				E('div', { 'style': 'color:#d97706;margin-top:3px' }, module.blocked_reason)
+			]);
 
 			return [ module.name || module.id, status, dependencies, action ];
 		});
