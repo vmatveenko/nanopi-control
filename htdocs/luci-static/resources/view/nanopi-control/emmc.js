@@ -133,6 +133,11 @@ function jobText(text) {
 		'Partition table was updated. Reboot once, then return to finish filesystem expansion.': 'Таблица разделов обновлена. Перезагрузите NanoPi и вернитесь для завершения расширения.',
 		'Expanding the ext4 filesystem': 'Расширение файловой системы ext4',
 		'Internal storage expansion completed.': 'Расширение внутреннего накопителя завершено.',
+		'Unable to save copy verification state': 'Не удалось сохранить состояние проверки копии',
+		'Unable to save completed copy state': 'Не удалось сохранить состояние завершённого копирования',
+		'Unable to save boot confirmation state': 'Не удалось сохранить подтверждение загрузки с eMMC',
+		'Unable to save partition expansion state': 'Не удалось сохранить состояние расширения раздела',
+		'Unable to save completed expansion state': 'Не удалось сохранить состояние завершённого расширения',
 		'Operation failed': 'Операция завершилась с ошибкой'
 	};
 	return translations[text] || text || '';
@@ -178,6 +183,7 @@ return view.extend({
 	},
 
 	render: function(data) {
+		const viewInstance = this;
 		const status = data[0] || {};
 		const preflight = data[1] || {};
 		const job = data[2] || {};
@@ -190,6 +196,7 @@ return view.extend({
 			migrationStage === 'partition_expanded_reboot_required' || migrationStage === 'expansion_completed';
 		const expansionCompleted = migrationStage === 'expansion_completed';
 		const preflightPassed = onSd && !!preflight.ready;
+		const jobContainer = E('div');
 
 		let confirmBootButton = null;
 		if (status.boot_confirm_available) {
@@ -221,7 +228,15 @@ return view.extend({
 				return callMigrationExpand('EXPAND').then(function(result) {
 					if (!result.accepted)
 						throw new Error(result.error || _('Unable to start expansion'));
-					window.location.reload();
+					jobContainer.replaceChildren(progressBlock({
+						phase: 'queued',
+						percent: 0,
+						running: true,
+						success: false,
+						message: 'Operation queued',
+						error: ''
+					}));
+					viewInstance.pollJob(jobContainer);
 				}).catch(function(error) {
 					ui.addNotification(null, E('p', {}, error.message), 'error');
 					expandButton.disabled = false;
@@ -244,10 +259,9 @@ return view.extend({
 			step(4, _('Expand partition'), _('Use all available internal storage after boot confirmation.'), expansionCompleted ? 'done' : bootConfirmed ? 'active' : 'pending', expandButton)
 		]));
 
-		const jobContainer = E('div');
+		root.appendChild(jobContainer);
 		if (job.phase && job.phase !== 'idle') {
 			jobContainer.appendChild(progressBlock(job));
-			root.appendChild(jobContainer);
 			if (job.running)
 				this.pollJob(jobContainer);
 		}
@@ -267,53 +281,73 @@ return view.extend({
 				checkRow(!!preflight.docker_ready, _('Docker state'),
 					preflight.docker_separate_mount ? _('Separate Docker storage is not supported') :
 					preflight.docker_installed ? _('Docker and its containers will be migrated; the service will be paused briefly') : _('Docker is not installed')),
-				checkRow(!!preflight.size_ready, _('Target capacity'), '%s · %s'.format(preflight.target || '-', formatBytes(preflight.target_size_bytes))),
-				checkRow(!!preflight.ready, _('Final result'), preflightReason(preflight.reason))
+				checkRow(!!preflight.size_ready, _('Target capacity'), '%s · %s'.format(preflight.target || '-', formatBytes(preflight.target_size_bytes)))
 			]));
 
-			const confirmation = E('input', {
-				'class': 'cbi-input-text',
-				'placeholder': preflight.target || status.internal_device || '/dev/mmcblkX',
-				'autocomplete': 'off'
-			});
 			const startButton = E('button', {
-				'class': 'btn cbi-button cbi-button-negative important',
-				'disabled': true
+				'class': 'btn cbi-button cbi-button-negative important'
 			}, _('Erase eMMC and start transfer'));
 			const eraseButton = E('button', {
-				'class': 'btn cbi-button cbi-button-negative important',
-				'disabled': true
+				'class': 'btn cbi-button cbi-button-negative important'
 			}, _('Erase eMMC'));
+			startButton.disabled = !preflight.ready || !preflight.target || !!job.running;
+			eraseButton.disabled = !preflight.target || !!job.running;
 
-			confirmation.addEventListener('input', function() {
-				startButton.disabled = !preflight.ready || confirmation.value !== preflight.target || !!job.running;
-				eraseButton.disabled = confirmation.value !== preflight.target || !!job.running;
-			});
 			startButton.addEventListener('click', ui.createHandlerFn(this, function() {
-				startButton.disabled = true;
-				return callMigrationStart(confirmation.value).then(function(result) {
-					if (!result.accepted)
-						throw new Error(result.error || _('Unable to start transfer'));
-					window.location.reload();
-				}).catch(function(error) {
-					ui.addNotification(null, E('p', {}, error.message), 'error');
-				});
+				ui.showModal('Подтверждение переноса', [
+					E('p', {}, 'Внутренняя память %s будет полностью очищена. После этого текущая система с SD-карты, включая настройки и данные Docker, будет скопирована на eMMC.'.format(preflight.target)),
+					E('p', {}, E('strong', {}, 'Все существующие данные на внутренней памяти будут удалены.')),
+					E('div', { 'class': 'right' }, [
+						E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
+						' ',
+						E('button', {
+							'class': 'btn cbi-button cbi-button-negative important',
+							'click': ui.createHandlerFn(this, function() {
+								ui.hideModal();
+								startButton.disabled = true;
+								return callMigrationStart(preflight.target).then(function(result) {
+									if (!result.accepted)
+										throw new Error(result.error || _('Unable to start transfer'));
+									window.location.reload();
+								}).catch(function(error) {
+									ui.addNotification(null, E('p', {}, error.message), 'error');
+									startButton.disabled = !preflight.ready || !preflight.target || !!job.running;
+								});
+							})
+						}, 'Очистить и начать перенос')
+					])
+				]);
 			}));
 			eraseButton.addEventListener('click', ui.createHandlerFn(this, function() {
-				eraseButton.disabled = true;
-				return callMigrationErase(confirmation.value).then(function(result) {
-					if (!result.accepted)
-						throw new Error(result.error || _('Unable to erase eMMC'));
-					window.location.reload();
-				}).catch(function(error) {
-					ui.addNotification(null, E('p', {}, error.message), 'error');
-					eraseButton.disabled = false;
-				});
+				ui.showModal('Подтверждение очистки', [
+					E('p', {}, 'Внутренняя память %s будет полностью очищена. Копирование системы не начнётся.'.format(preflight.target)),
+					E('p', {}, E('strong', {}, 'Все существующие данные на внутренней памяти будут удалены.')),
+					E('div', { 'class': 'right' }, [
+						E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
+						' ',
+						E('button', {
+							'class': 'btn cbi-button cbi-button-negative important',
+							'click': ui.createHandlerFn(this, function() {
+								ui.hideModal();
+								eraseButton.disabled = true;
+								return callMigrationErase(preflight.target).then(function(result) {
+									if (!result.accepted)
+										throw new Error(result.error || _('Unable to erase eMMC'));
+									window.location.reload();
+								}).catch(function(error) {
+									ui.addNotification(null, E('p', {}, error.message), 'error');
+									eraseButton.disabled = !preflight.target || !!job.running;
+								});
+							})
+						}, 'Очистить')
+					])
+				]);
 			}));
 
+			root.appendChild(E('h3', {}, 'Копирование системы'));
 			root.appendChild(E('div', { 'class': 'cbi-section' }, [
-				E('p', {}, _('To confirm erasing the internal storage, enter its device name exactly: %s').format(preflight.target || '-')),
-				E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ confirmation, startButton, eraseButton ]),
+				E('p', {}, 'Выберите действие с внутренней памятью %s. Перед очисткой появится окно подтверждения.'.format(preflight.target || '-')),
+				E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [ startButton, eraseButton ]),
 				E('p', { 'style': 'color:#666;margin-top:12px' },
 					_('After successful copying, shut the NanoPi down, remove the SD card and boot it again. Do not erase the SD card until eMMC boot is verified.'))
 			]));

@@ -32,7 +32,7 @@ preflight() {
 	local status source target source_disk target_disk
 	local p1_start p1_size p2_start target_sectors used_kib used_bytes
 	local initial_bytes initial_sectors safety_bytes p2_end commands_ready layout_ready size_ready
-	local docker_ready docker_installed docker_running docker_separate_mount ready reason command
+	local docker_ready docker_installed docker_running docker_separate_mount root_mount_device ready reason command
 
 	status="$($DETECT --json)"
 	source="$(jsonfilter -s "$status" -e '@.root_device')"
@@ -78,11 +78,17 @@ preflight() {
 	docker_running=0
 	pidof dockerd >/dev/null 2>&1 && docker_running=1
 	docker_separate_mount=0
-	awk '{
+	root_mount_device="$(awk '$5 == "/" { print $3; exit }' /proc/self/mountinfo 2>/dev/null)"
+	awk -v root_mount_device="$root_mount_device" '{
 		filesystem = ""
 		for (i = 1; i <= NF; i++)
 			if ($i == "-") { filesystem = $(i + 1); break }
-		if ($5 == "/opt/docker" || ($5 ~ /^\/opt\/docker\// && filesystem != "overlay"))
+		if ($5 == "/opt/docker" && $3 != root_mount_device)
+			found = 1
+		if ($5 ~ /^\/opt\/docker\// && $3 != root_mount_device &&
+			filesystem != "overlay" && filesystem != "tmpfs" && filesystem != "proc" &&
+			filesystem != "sysfs" && filesystem != "cgroup2" && filesystem != "mqueue" &&
+			filesystem != "devpts")
 			found = 1
 	} END { exit !found }' /proc/self/mountinfo 2>/dev/null && docker_separate_mount=1
 	docker_ready=1

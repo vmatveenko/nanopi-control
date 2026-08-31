@@ -1,5 +1,6 @@
 #!/bin/sh
 
+
 RUNTIME_DIR="/tmp/nanopi-control"
 JOB_FILE="$RUNTIME_DIR/migration-job.json"
 PID_FILE="$RUNTIME_DIR/migration.pid"
@@ -34,18 +35,26 @@ write_job() {
 
 write_persistent_state() {
 	local file="$1" stage="$2" source="$3" target="$4"
-	local directory tmp
+	local directory tmp saved_stage
 
 	directory="${file%/*}"
-	mkdir -p "$directory"
+	mkdir -p "$directory" || return 1
 	tmp="$file.tmp.$$"
 	json_init
 	json_add_string stage "$stage"
 	json_add_string source "$source"
 	json_add_string target "$target"
 	json_add_int updated_at "$(date +%s)"
-	json_dump > "$tmp"
-	mv "$tmp" "$file"
+	json_dump > "$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	mv "$tmp" "$file" || {
+		rm -f "$tmp"
+		return 1
+	}
+	saved_stage="$(jsonfilter -i "$file" -e '@.stage' 2>/dev/null)"
+	[ "$saved_stage" = "$stage" ]
 }
 
 fail() {
@@ -157,7 +166,7 @@ transfer() {
 	chmod 1777 "$TARGET_MOUNT/tmp"
 
 	target_state="$TARGET_MOUNT$STATE_FILE"
-	write_persistent_state "$target_state" copy_verifying "$source" "$target"
+	write_persistent_state "$target_state" copy_verifying "$source" "$target" || fail "Unable to save copy verification state"
 	[ -x "$TARGET_MOUNT/usr/libexec/nanopi-control/detect-storage" ] || fail "NanoPi Control was not copied to eMMC"
 	[ -r "$TARGET_MOUNT/etc/openwrt_release" ] || fail "OpenWrt release information is missing on eMMC"
 	sync
@@ -170,7 +179,7 @@ transfer() {
 	write_job save_state 94 1 0 "Saving completed copy state on eMMC" ""
 	mount "$target_p2" "$TARGET_MOUNT" || fail "Unable to remount verified target filesystem"
 	TARGET_MOUNTED=1
-	write_persistent_state "$TARGET_MOUNT$STATE_FILE" copy_completed "$source" "$target"
+	write_persistent_state "$TARGET_MOUNT$STATE_FILE" copy_completed "$source" "$target" || fail "Unable to save completed copy state"
 	sync
 	umount "$TARGET_MOUNT" || fail "Unable to unmount verified target filesystem"
 	TARGET_MOUNTED=0
@@ -197,7 +206,8 @@ confirm_boot() {
 	disk="$(jsonfilter -s "$status" -e '@.root_device')"
 	source="$(jsonfilter -i "$STATE_FILE" -e '@.source' 2>/dev/null)"
 
-	write_persistent_state "$STATE_FILE" boot_confirmed "$source" "$disk"
+	write_persistent_state "$STATE_FILE" boot_confirmed "$source" "$disk" || fail "Unable to save boot confirmation state"
+	sync
 	$DETECT >/dev/null 2>&1 || true
 	rm -f /tmp/luci-indexcache
 	write_job boot_confirmed 100 0 1 "Boot from internal eMMC was confirmed." ""
@@ -237,7 +247,8 @@ expand() {
 	fi
 
 	if [ "$new_size" -lt "$desired_size" ]; then
-		write_persistent_state "$STATE_FILE" partition_expanded_reboot_required "$source" "$disk"
+		write_persistent_state "$STATE_FILE" partition_expanded_reboot_required "$source" "$disk" || fail "Unable to save partition expansion state"
+		sync
 		$DETECT >/dev/null 2>&1 || true
 		write_job reboot_required 100 0 1 "Partition table was updated. Reboot once, then return to finish filesystem expansion." ""
 		FINISHED=1
@@ -248,7 +259,8 @@ expand() {
 	write_job expand_filesystem 70 1 0 "Expanding the ext4 filesystem" ""
 	resize2fs "$partition" || fail "Unable to expand ext4 filesystem"
 	sync
-	write_persistent_state "$STATE_FILE" expansion_completed "$source" "$disk"
+	write_persistent_state "$STATE_FILE" expansion_completed "$source" "$disk" || fail "Unable to save completed expansion state"
+	sync
 	$DETECT >/dev/null 2>&1 || true
 	rm -f /tmp/luci-indexcache
 	write_job complete 100 0 1 "Internal storage expansion completed." ""

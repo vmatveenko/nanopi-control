@@ -395,13 +395,19 @@ return view.extend({
 			? E('span', { 'style': 'color:#d97706' },
 				'Для увеличения загрузитесь с eMMC и после загрузки вставьте SD-карту.')
 			: '';
+		const bootSource = status.boot_medium === 'sd'
+			? E('span', {}, [
+				E('span', { 'style': 'color:#b42318' }, mediumLabel(status.boot_medium)),
+				' · ' + (status.root_device || '-')
+			])
+			: '%s · %s'.format(mediumLabel(status.boot_medium), status.root_device || '-');
 		const systemRows = [
 			[ _('Model'), board.model || status.model || '-', '' ],
 			[ _('Board'), board.board_name || status.board_name || '-', '' ],
 			[ _('OpenWrt version'), release.description || release.version || '-', '' ],
 			[ _('Kernel version'), board.kernel || '-', '' ],
 			[ _('NanoPi Control version'), status.module_version || '-', '' ],
-			[ _('Boot source'), '%s · %s'.format(mediumLabel(status.boot_medium), status.root_device || '-'), '' ],
+			[ _('Boot source'), bootSource, '' ],
 			[ _('Internal storage'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : _('Not detected'), '' ],
 			[ _('System partition'), '%s · %s · %s занято из %s · %s свободно'.format(status.root_partition || '-', status.root_filesystem || '-', formatBytes(rootUsedBytes), formatBytes(rootBytes), formatBytes(freeBytes)), sdExpansionHint ],
 			[ _('Active IPv4 addresses'), activeAddresses(interfaces), '' ],
