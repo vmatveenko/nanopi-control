@@ -22,7 +22,7 @@
 	},
 	"admin/services/nanopi-control/transfer": {
 		"title": "SD to eMMC",
-		"order": 3,
+		"order": 5,
 		"action": {
 			"type": "view",
 			"path": "nanopi-control/emmc"
@@ -45,6 +45,34 @@
 			"acl": [ "luci-app-nanopi-control" ],
 			"fs": {
 				"/etc/nanopi-control/3x-ui-installed": "file"
+			}
+		}
+	},
+	"admin/services/nanopi-control/vaultwarden": {
+		"title": "Vaultwarden",
+		"order": 3,
+		"action": {
+			"type": "view",
+			"path": "nanopi-control/vaultwarden"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/etc/nanopi-control/vaultwarden-installed": "file"
+			}
+		}
+	},
+	"admin/services/nanopi-control/caddy": {
+		"title": "Caddy",
+		"order": 4,
+		"action": {
+			"type": "view",
+			"path": "nanopi-control/caddy"
+		},
+		"depends": {
+			"acl": [ "luci-app-nanopi-control" ],
+			"fs": {
+				"/etc/nanopi-control/caddy-installed": "file"
 			}
 		}
 	}

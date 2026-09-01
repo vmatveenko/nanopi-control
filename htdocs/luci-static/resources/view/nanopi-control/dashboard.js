@@ -179,7 +179,7 @@ return view.extend({
 				container.replaceChildren(view.renderModules(state, container));
 				if (!state.job || !state.job.running) {
 					window.clearInterval(timer);
-					if (state.job && state.job.module === '3x-ui' && state.job.success)
+					if (state.job && (state.job.module === '3x-ui' || state.job.module === 'vaultwarden' || state.job.module === 'caddy') && state.job.success)
 						window.setTimeout(function() {
 							window.location.href = window.location.pathname + '?refresh=' + Date.now();
 						}, 700);
@@ -196,7 +196,8 @@ return view.extend({
 			container.replaceChildren(moduleJobProgress({
 				running: true,
 				percent: 0,
-				message: '%s %s'.format(action === 'install' ? 'Подготовка установки' : 'Подготовка удаления', module === 'docker' ? 'Docker' : '3x-ui')
+				message: '%s %s'.format(action === 'install' ? 'Подготовка установки' : 'Подготовка удаления',
+					module === 'docker' ? 'Docker' : module === '3x-ui' ? '3x-ui' : module === 'vaultwarden' ? 'Vaultwarden' : 'Caddy')
 			}));
 			view.pollModules(container);
 		}).catch(function(error) {
@@ -227,11 +228,18 @@ return view.extend({
 				action.disabled = !module.can_remove;
 				if (module.can_remove) action.addEventListener('click', ui.createHandlerFn(view, function() {
 					const isDocker = module.id === 'docker';
-					ui.showModal('Удаление ' + (isDocker ? 'Docker' : '3x-ui'), [
+					const isXui = module.id === '3x-ui';
+					const isVaultwarden = module.id === 'vaultwarden';
+					const moduleName = isDocker ? 'Docker' : isXui ? '3x-ui' : isVaultwarden ? 'Vaultwarden' : 'Caddy';
+					ui.showModal('Удаление ' + moduleName, [
 						E('p', {}, isDocker
 							? 'Пакеты Docker будут удалены. Данные контейнеров в /opt/docker сохранятся.'
-							: 'Контейнер, образ, база данных, сертификаты и все настройки 3x-ui будут полностью удалены.'),
-						!isDocker ? E('p', { 'style': 'color:#b42318' }, 'После повторной установки 3x-ui будет запущен с настройками по умолчанию.') : '',
+							: isXui
+								? 'Контейнер, образ, база данных, сертификаты и все настройки 3x-ui будут полностью удалены.'
+								: isVaultwarden
+									? 'Контейнер, образ, база данных и все настройки Vaultwarden будут полностью удалены.'
+									: 'Контейнер, образ, конфигурация и все данные Caddy будут полностью удалены.'),
+						!isDocker ? E('p', { 'style': 'color:#b42318' }, 'После повторной установки ' + moduleName + ' будет запущен с настройками по умолчанию.') : '',
 						E('div', { 'class': 'right' }, [
 							E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
 							' ',
@@ -239,7 +247,7 @@ return view.extend({
 								'class': 'btn cbi-button cbi-button-negative important',
 								'click': ui.createHandlerFn(view, function() {
 									ui.hideModal();
-									return view.startModuleAction(module.id, 'remove', isDocker ? 'REMOVE_DOCKER' : 'REMOVE_3X_UI', container);
+									return view.startModuleAction(module.id, 'remove', isDocker ? 'REMOVE_DOCKER' : isXui ? 'REMOVE_3X_UI' : isVaultwarden ? 'REMOVE_VAULTWARDEN' : 'REMOVE_CADDY', container);
 								})
 							}, 'Удалить')
 						])

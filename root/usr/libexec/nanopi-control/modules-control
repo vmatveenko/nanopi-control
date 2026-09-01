@@ -8,6 +8,13 @@ WORKER="/usr/libexec/nanopi-control/modules-worker"
 XUI_MARKER="/etc/nanopi-control/3x-ui-installed"
 XUI_DATA_DIR="/opt/3x-ui"
 XUI_CONTAINER="3x-ui"
+VAULTWARDEN_MARKER="/etc/nanopi-control/vaultwarden-installed"
+VAULTWARDEN_DATA_DIR="/opt/vaultwarden"
+VAULTWARDEN_CONTAINER="vaultwarden"
+VAULTWARDEN_PORT=8000
+CADDY_MARKER="/etc/nanopi-control/caddy-installed"
+CADDY_DATA_DIR="/opt/caddy"
+CADDY_CONTAINER="caddy"
 MIN_FREE_KIB=524288
 
 . /usr/share/libubox/jshn.sh
@@ -63,6 +70,31 @@ sync_xui_marker() {
 	fi
 }
 
+vaultwarden_container_exists() {
+	docker_ready && docker container inspect "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1
+}
+
+vaultwarden_running() {
+	[ "$(docker container inspect -f '{{.State.Running}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)" = "true" ]
+}
+
+vaultwarden_has_data() {
+	[ -d "$VAULTWARDEN_DATA_DIR" ] && [ -n "$(ls -A "$VAULTWARDEN_DATA_DIR" 2>/dev/null)" ]
+}
+
+vaultwarden_managed() {
+	vaultwarden_container_exists || vaultwarden_has_data || [ -e "$VAULTWARDEN_MARKER" ]
+}
+
+sync_vaultwarden_marker() {
+	if vaultwarden_container_exists; then
+		mkdir -p "${VAULTWARDEN_MARKER%/*}"
+		: > "$VAULTWARDEN_MARKER"
+	elif docker_ready && [ -e "$VAULTWARDEN_MARKER" ] && ! vaultwarden_has_data; then
+		rm -f "$VAULTWARDEN_MARKER"
+	fi
+}
+
 free_kib() {
 	df -Pk / 2>/dev/null | awk 'NR == 2 { print $4 + 0 }'
 }
@@ -70,6 +102,41 @@ free_kib() {
 xui_default_port_in_use() {
 	command -v ss >/dev/null 2>&1 || return 1
 	ss -lnt 2>/dev/null | awk 'NR > 1 { address = $4; sub(/^.*:/, "", address); if (address == "2053") found = 1 } END { exit !found }'
+}
+
+vaultwarden_port_in_use() {
+	if command -v ss >/dev/null 2>&1; then
+		ss -lnt 2>/dev/null | awk -v port="$VAULTWARDEN_PORT" 'NR > 1 { address = $4; sub(/^.*:/, "", address); if (address == port) found = 1 } END { exit !found }'
+	elif command -v netstat >/dev/null 2>&1; then
+		netstat -lnt 2>/dev/null | awk -v port="$VAULTWARDEN_PORT" 'NR > 2 { address = $4; sub(/^.*:/, "", address); if (address == port) found = 1 } END { exit !found }'
+	else
+		return 1
+	fi
+}
+
+caddy_container_exists() {
+	docker_ready && docker container inspect "$CADDY_CONTAINER" >/dev/null 2>&1
+}
+
+caddy_running() {
+	[ "$(docker container inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" = "true" ]
+}
+
+caddy_has_data() {
+	[ -d "$CADDY_DATA_DIR" ] && [ -n "$(ls -A "$CADDY_DATA_DIR" 2>/dev/null)" ]
+}
+
+caddy_managed() {
+	caddy_container_exists || caddy_has_data || [ -e "$CADDY_MARKER" ]
+}
+
+sync_caddy_marker() {
+	if caddy_container_exists; then
+		mkdir -p "${CADDY_MARKER%/*}"
+		: > "$CADDY_MARKER"
+	elif docker_ready && [ -e "$CADDY_MARKER" ] && ! caddy_has_data; then
+		rm -f "$CADDY_MARKER"
+	fi
 }
 
 add_job() {
@@ -107,7 +174,7 @@ add_job() {
 }
 
 add_docker_module() {
-	local installed="$1" running="$2" enabled="$3" can_install="$4" can_remove="$5" reason="$6" xui_installed="$7"
+	local installed="$1" running="$2" enabled="$3" can_install="$4" can_remove="$5" reason="$6" xui_installed="$7" vaultwarden_installed="$8" caddy_installed="$9"
 
 	json_add_object ""
 	json_add_string id docker
@@ -124,6 +191,54 @@ add_docker_module() {
 	json_close_array
 	json_add_array dependents
 	[ "$xui_installed" -eq 1 ] && json_add_string "" "3x-ui"
+	[ "$vaultwarden_installed" -eq 1 ] && json_add_string "" "Vaultwarden"
+	[ "$caddy_installed" -eq 1 ] && json_add_string "" "Caddy"
+	json_close_array
+	json_close_object
+}
+
+add_caddy_module() {
+	local installed="$1" running="$2" can_install="$3" can_remove="$4" reason="$5" docker_installed_state="$6"
+
+	json_add_object ""
+	json_add_string id caddy
+	json_add_string name Caddy
+	json_add_boolean installed "$installed"
+	json_add_boolean service_running "$running"
+	json_add_boolean service_enabled "$installed"
+	json_add_boolean can_install "$can_install"
+	json_add_boolean can_remove "$can_remove"
+	json_add_string blocked_reason "$reason"
+	json_add_array dependencies
+	json_add_string "" Docker
+	json_close_array
+	json_add_array missing_dependencies
+	[ "$docker_installed_state" -ne 1 ] && json_add_string "" Docker
+	json_close_array
+	json_add_array dependents
+	json_close_array
+	json_close_object
+}
+
+add_vaultwarden_module() {
+	local installed="$1" running="$2" can_install="$3" can_remove="$4" reason="$5" docker_installed_state="$6"
+
+	json_add_object ""
+	json_add_string id vaultwarden
+	json_add_string name Vaultwarden
+	json_add_boolean installed "$installed"
+	json_add_boolean service_running "$running"
+	json_add_boolean service_enabled "$installed"
+	json_add_boolean can_install "$can_install"
+	json_add_boolean can_remove "$can_remove"
+	json_add_string blocked_reason "$reason"
+	json_add_array dependencies
+	json_add_string "" Docker
+	json_close_array
+	json_add_array missing_dependencies
+	[ "$docker_installed_state" -ne 1 ] && json_add_string "" Docker
+	json_close_array
+	json_add_array dependents
 	json_close_array
 	json_close_object
 }
@@ -155,6 +270,8 @@ status() {
 	local docker_is_installed=0 docker_is_running=0 docker_is_enabled=0
 	local docker_can_install=0 docker_can_remove=0 docker_reason=""
 	local xui_is_installed=0 xui_is_running=0 xui_can_install=0 xui_can_remove=0 xui_reason=""
+	local vaultwarden_is_installed=0 vaultwarden_is_running=0 vaultwarden_can_install=0 vaultwarden_can_remove=0 vaultwarden_reason=""
+	local caddy_is_installed=0 caddy_is_running=0 caddy_can_install=0 caddy_can_remove=0 caddy_reason=""
 	local free
 
 	docker_installed && docker_is_installed=1
@@ -164,13 +281,21 @@ status() {
 	xui_running && xui_is_running=1
 	xui_managed && xui_can_remove=1
 	sync_xui_marker
+	vaultwarden_container_exists && vaultwarden_is_installed=1
+	vaultwarden_running && vaultwarden_is_running=1
+	vaultwarden_managed && vaultwarden_can_remove=1
+	sync_vaultwarden_marker
+	caddy_container_exists && caddy_is_installed=1
+	caddy_running && caddy_is_running=1
+	caddy_managed && caddy_can_remove=1
+	sync_caddy_marker
 
 	free="$(free_kib)"
 	case "$free" in ''|*[!0-9]*) free=0 ;; esac
 
 	if [ "$docker_is_installed" -eq 1 ]; then
-		if [ "$xui_is_installed" -eq 1 ]; then
-			docker_reason="Сначала удалите зависимый модуль 3x-ui"
+		if [ "$xui_is_installed" -eq 1 ] || [ "$vaultwarden_is_installed" -eq 1 ] || [ "$caddy_is_installed" -eq 1 ]; then
+			docker_reason="Сначала удалите все зависимые модули"
 		else
 			docker_can_remove=1
 		fi
@@ -180,6 +305,40 @@ status() {
 		docker_reason="Недостаточно места: требуется не менее 512 МиБ свободного пространства"
 	else
 		docker_can_install=1
+	fi
+
+	if [ "$caddy_is_installed" -eq 1 ]; then
+		:
+	elif caddy_has_data || [ -e "$CADDY_MARKER" ]; then
+		caddy_reason="Обнаружены данные незавершённой установки; удалите модуль для полного сброса"
+	elif [ "$docker_is_installed" -ne 1 ]; then
+		caddy_reason="Сначала установите Docker"
+	elif [ "$docker_is_running" -ne 1 ] || ! docker info >/dev/null 2>&1; then
+		caddy_reason="Служба Docker не запущена"
+	elif [ "$(uname -m)" != "aarch64" ]; then
+		caddy_reason="Caddy доступен только для архитектуры aarch64"
+	elif [ "$free" -lt "$MIN_FREE_KIB" ]; then
+		caddy_reason="Недостаточно места: требуется не менее 512 МиБ свободного пространства"
+	else
+		caddy_can_install=1
+	fi
+
+	if [ "$vaultwarden_is_installed" -eq 1 ]; then
+		:
+	elif vaultwarden_has_data || [ -e "$VAULTWARDEN_MARKER" ]; then
+		vaultwarden_reason="Обнаружены данные незавершённой установки; удалите модуль для полного сброса"
+	elif [ "$docker_is_installed" -ne 1 ]; then
+		vaultwarden_reason="Сначала установите Docker"
+	elif [ "$docker_is_running" -ne 1 ] || ! docker info >/dev/null 2>&1; then
+		vaultwarden_reason="Служба Docker не запущена"
+	elif [ "$(uname -m)" != "aarch64" ]; then
+		vaultwarden_reason="Vaultwarden доступен только для архитектуры aarch64"
+	elif [ "$free" -lt "$MIN_FREE_KIB" ]; then
+		vaultwarden_reason="Недостаточно места: требуется не менее 512 МиБ свободного пространства"
+	elif vaultwarden_port_in_use; then
+		vaultwarden_reason="Порт Vaultwarden $VAULTWARDEN_PORT уже занят"
+	else
+		vaultwarden_can_install=1
 	fi
 
 	if [ "$xui_is_installed" -eq 1 ]; then
@@ -202,8 +361,10 @@ status() {
 
 	json_init
 	json_add_array modules
-	add_docker_module "$docker_is_installed" "$docker_is_running" "$docker_is_enabled" "$docker_can_install" "$docker_can_remove" "$docker_reason" "$xui_is_installed"
+	add_docker_module "$docker_is_installed" "$docker_is_running" "$docker_is_enabled" "$docker_can_install" "$docker_can_remove" "$docker_reason" "$xui_is_installed" "$vaultwarden_is_installed" "$caddy_is_installed"
 	add_xui_module "$xui_is_installed" "$xui_is_running" "$xui_can_install" "$xui_can_remove" "$xui_reason" "$docker_is_installed"
+	add_vaultwarden_module "$vaultwarden_is_installed" "$vaultwarden_is_running" "$vaultwarden_can_install" "$vaultwarden_can_remove" "$vaultwarden_reason" "$docker_is_installed"
+	add_caddy_module "$caddy_is_installed" "$caddy_is_running" "$caddy_can_install" "$caddy_can_remove" "$caddy_reason" "$docker_is_installed"
 	json_close_array
 	add_job
 	json_dump
@@ -243,8 +404,20 @@ start_job() {
 				printf '%s\n' '{ "accepted": false, "error": "Docker не установлен" }'
 				exit 1
 			fi
+			if xui_container_exists && vaultwarden_container_exists; then
+				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимые модули 3x-ui и Vaultwarden" }'
+				exit 1
+			fi
 			if xui_container_exists; then
 				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль 3x-ui" }'
+				exit 1
+			fi
+			if vaultwarden_container_exists; then
+				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль Vaultwarden" }'
+				exit 1
+			fi
+			if caddy_container_exists; then
+				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль Caddy" }'
 				exit 1
 			fi
 			;;
@@ -272,6 +445,50 @@ start_job() {
 				exit 1
 			fi
 			;;
+		vaultwarden:install)
+			docker_ready || {
+				printf '%s\n' '{ "accepted": false, "error": "Docker не установлен или не запущен" }'
+				exit 1
+			}
+			if vaultwarden_managed; then
+				printf '%s\n' '{ "accepted": false, "error": "Vaultwarden уже установлен или обнаружены сохранённые данные" }'
+				exit 1
+			fi
+			if vaultwarden_port_in_use; then
+				printf '%s\n' '{ "accepted": false, "error": "Порт Vaultwarden 8000 уже занят" }'
+				exit 1
+			fi
+			;;
+		vaultwarden:remove)
+			if [ "$confirmation" != "REMOVE_VAULTWARDEN" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Удаление Vaultwarden не подтверждено" }'
+				exit 1
+			fi
+			if ! vaultwarden_managed; then
+				printf '%s\n' '{ "accepted": false, "error": "Vaultwarden не установлен" }'
+				exit 1
+			fi
+			;;
+		caddy:install)
+			docker_ready || {
+				printf '%s\n' '{ "accepted": false, "error": "Docker не установлен или не запущен" }'
+				exit 1
+			}
+			if caddy_managed; then
+				printf '%s\n' '{ "accepted": false, "error": "Caddy уже установлен или обнаружены сохранённые данные" }'
+				exit 1
+			fi
+			;;
+		caddy:remove)
+			if [ "$confirmation" != "REMOVE_CADDY" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Удаление Caddy не подтверждено" }'
+				exit 1
+			fi
+			if ! caddy_managed; then
+				printf '%s\n' '{ "accepted": false, "error": "Caddy не установлен" }'
+				exit 1
+			fi
+			;;
 		*)
 			printf '%s\n' '{ "accepted": false, "error": "Неизвестное действие" }'
 			exit 1
@@ -292,7 +509,7 @@ start_job() {
 
 case "$1" in
 	status) status ;;
-	sync-menu) sync_xui_marker ;;
+	sync-menu) sync_xui_marker; sync_vaultwarden_marker; sync_caddy_marker ;;
 	start) start_job "$2" "$3" "$4" ;;
 	*)
 		printf '%s\n' '{ "error": "Неизвестная команда управления модулями" }'

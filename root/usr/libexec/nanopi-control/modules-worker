@@ -10,8 +10,19 @@ XUI_IMAGE="ghcr.io/mhsanaei/3x-ui:latest"
 XUI_CONTAINER="3x-ui"
 XUI_DATA_DIR="/opt/3x-ui"
 XUI_MARKER="/etc/nanopi-control/3x-ui-installed"
+VAULTWARDEN_IMAGE="vaultwarden/server:latest"
+VAULTWARDEN_CONTAINER="vaultwarden"
+VAULTWARDEN_DATA_DIR="/opt/vaultwarden"
+VAULTWARDEN_MARKER="/etc/nanopi-control/vaultwarden-installed"
+VAULTWARDEN_PORT=8000
+CADDY_IMAGE="caddy:2-alpine"
+CADDY_CONTAINER="caddy"
+CADDY_DATA_DIR="/opt/caddy"
+CADDY_MARKER="/etc/nanopi-control/caddy-installed"
 FINISHED=0
 XUI_CREATED=0
+VAULTWARDEN_CREATED=0
+CADDY_CREATED=0
 
 . /usr/share/libubox/jshn.sh
 
@@ -48,9 +59,27 @@ remove_xui_data() {
 	rmdir /opt/3x-ui >/dev/null 2>&1 || true
 }
 
+remove_vaultwarden_data() {
+	rm -rf "$VAULTWARDEN_DATA_DIR"
+}
+
+remove_caddy_data() {
+	rm -rf "$CADDY_DATA_DIR"
+}
+
 xui_default_port_in_use() {
 	command -v ss >/dev/null 2>&1 || return 1
 	ss -lnt 2>/dev/null | awk 'NR > 1 { address = $4; sub(/^.*:/, "", address); if (address == "2053") found = 1 } END { exit !found }'
+}
+
+vaultwarden_port_in_use() {
+	if command -v ss >/dev/null 2>&1; then
+		ss -lnt 2>/dev/null | awk -v port="$VAULTWARDEN_PORT" 'NR > 1 { address = $4; sub(/^.*:/, "", address); if (address == port) found = 1 } END { exit !found }'
+	elif command -v netstat >/dev/null 2>&1; then
+		netstat -lnt 2>/dev/null | awk -v port="$VAULTWARDEN_PORT" 'NR > 2 { address = $4; sub(/^.*:/, "", address); if (address == port) found = 1 } END { exit !found }'
+	else
+		return 1
+	fi
 }
 
 fail() {
@@ -58,6 +87,16 @@ fail() {
 		docker container rm -f "$XUI_CONTAINER" >/dev/null 2>&1 || true
 		remove_xui_data
 		rm -f "$XUI_MARKER"
+	fi
+	if [ "$MODULE:$ACTION" = "vaultwarden:install" ] && [ "$VAULTWARDEN_CREATED" -eq 1 ]; then
+		docker container rm -f "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 || true
+		remove_vaultwarden_data
+		rm -f "$VAULTWARDEN_MARKER"
+	fi
+	if [ "$MODULE:$ACTION" = "caddy:install" ] && [ "$CADDY_CREATED" -eq 1 ]; then
+		docker container rm -f "$CADDY_CONTAINER" >/dev/null 2>&1 || true
+		remove_caddy_data
+		rm -f "$CADDY_MARKER"
 	fi
 	write_state error 100 0 0 "Операция завершилась с ошибкой" "$1"
 	FINISHED=1
@@ -103,6 +142,8 @@ install_docker() {
 
 remove_docker() {
 	docker container inspect "$XUI_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль 3x-ui"
+	docker container inspect "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль Vaultwarden"
+	docker container inspect "$CADDY_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль Caddy"
 
 	write_state stopping 15 1 0 "Остановка Docker" ""
 	/etc/init.d/dockerd stop >/dev/null 2>&1 || true
@@ -113,6 +154,128 @@ remove_docker() {
 
 	clear_luci_cache
 	write_state complete 100 0 1 "Docker удалён. Данные в /opt/docker сохранены" ""
+}
+
+install_caddy() {
+	docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает"
+	docker container inspect "$CADDY_CONTAINER" >/dev/null 2>&1 && fail "Контейнер Caddy уже существует"
+	[ ! -e "$CADDY_DATA_DIR" ] || fail "Обнаружены данные предыдущей установки Caddy"
+
+	write_state preparing 10 1 0 "Подготовка каталогов Caddy" ""
+	mkdir -p "$CADDY_DATA_DIR/data" "$CADDY_DATA_DIR/config" || fail "Не удалось создать каталоги данных Caddy"
+	printf '{\n\tadmin 127.0.0.1:2019\n}\n' > "$CADDY_DATA_DIR/Caddyfile" || fail "Не удалось создать базовую конфигурацию Caddy"
+	CADDY_CREATED=1
+
+	write_state downloading 25 1 0 "Загрузка образа Caddy" ""
+	docker image pull "$CADDY_IMAGE" || fail "Не удалось загрузить образ Caddy"
+
+	write_state starting 75 1 0 "Создание и запуск контейнера Caddy" ""
+	docker run -d \
+		--name "$CADDY_CONTAINER" \
+		--restart=unless-stopped \
+		--network=host \
+		-v "$CADDY_DATA_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
+		-v "$CADDY_DATA_DIR/data:/data" \
+		-v "$CADDY_DATA_DIR/config:/config" \
+		"$CADDY_IMAGE" >/dev/null || fail "Не удалось создать контейнер Caddy"
+
+	write_state verifying 90 1 0 "Проверка запуска Caddy" ""
+	attempt=0
+	while [ "$attempt" -lt 20 ]; do
+		[ "$(docker container inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" = "true" ] && \
+			docker exec "$CADDY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 && break
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+	[ "$(docker container inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" = "true" ] || fail "Контейнер Caddy не перешёл в состояние running"
+	docker exec "$CADDY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 || fail "Базовая конфигурация Caddy не прошла проверку"
+	[ "$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$CADDY_CONTAINER" 2>/dev/null)" = "host" ] || fail "Контейнер Caddy запущен не в сети host"
+
+	mkdir -p "${CADDY_MARKER%/*}"
+	: > "$CADDY_MARKER"
+	CADDY_CREATED=0
+	write_state complete 100 0 1 "Caddy установлен и запущен" ""
+	refresh_luci_menu
+}
+
+remove_caddy() {
+	write_state stopping 15 1 0 "Остановка и удаление контейнера Caddy" ""
+	if docker info >/dev/null 2>&1; then
+		docker container rm -f "$CADDY_CONTAINER" >/dev/null 2>&1 || true
+	fi
+
+	write_state removing 55 1 0 "Удаление конфигурации и данных Caddy" ""
+	remove_caddy_data
+	rm -f "$CADDY_MARKER"
+
+	write_state cleanup 80 1 0 "Удаление образа Caddy" ""
+	if docker info >/dev/null 2>&1; then
+		docker image rm "$CADDY_IMAGE" >/dev/null 2>&1 || true
+	fi
+
+	write_state complete 100 0 1 "Caddy и все его данные полностью удалены" ""
+	refresh_luci_menu
+}
+
+install_vaultwarden() {
+	docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает"
+	docker container inspect "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 && fail "Контейнер Vaultwarden уже существует"
+	[ ! -e "$VAULTWARDEN_DATA_DIR" ] || fail "Обнаружены данные предыдущей установки Vaultwarden"
+	vaultwarden_port_in_use && fail "Порт Vaultwarden $VAULTWARDEN_PORT уже занят"
+
+	write_state preparing 10 1 0 "Подготовка каталога Vaultwarden" ""
+	mkdir -p "$VAULTWARDEN_DATA_DIR" || fail "Не удалось создать каталог данных Vaultwarden"
+	VAULTWARDEN_CREATED=1
+
+	write_state downloading 25 1 0 "Загрузка образа Vaultwarden" ""
+	docker image pull "$VAULTWARDEN_IMAGE" || fail "Не удалось загрузить образ Vaultwarden"
+
+	write_state starting 75 1 0 "Создание и запуск контейнера Vaultwarden" ""
+	docker run -d \
+		--name "$VAULTWARDEN_CONTAINER" \
+		--restart=unless-stopped \
+		--network=host \
+		-e ROCKET_PORT="$VAULTWARDEN_PORT" \
+		-e SIGNUPS_ALLOWED=true \
+		-v "$VAULTWARDEN_DATA_DIR:/data" \
+		"$VAULTWARDEN_IMAGE" >/dev/null || fail "Не удалось создать контейнер Vaultwarden"
+
+	write_state verifying 90 1 0 "Проверка запуска Vaultwarden" ""
+	attempt=0
+	while [ "$attempt" -lt 30 ]; do
+		[ "$(docker container inspect -f '{{.State.Running}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)" = "true" ] && \
+			uclient-fetch -q -T 3 -O /dev/null "http://127.0.0.1:$VAULTWARDEN_PORT/alive" 2>/dev/null && break
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+	[ "$(docker container inspect -f '{{.State.Running}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)" = "true" ] || fail "Контейнер Vaultwarden не перешёл в состояние running"
+	uclient-fetch -q -T 3 -O /dev/null "http://127.0.0.1:$VAULTWARDEN_PORT/alive" 2>/dev/null || fail "Vaultwarden не отвечает на порту $VAULTWARDEN_PORT"
+	[ "$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)" = "host" ] || fail "Контейнер Vaultwarden запущен не в сети host"
+
+	mkdir -p "${VAULTWARDEN_MARKER%/*}"
+	: > "$VAULTWARDEN_MARKER"
+	VAULTWARDEN_CREATED=0
+	write_state complete 100 0 1 "Vaultwarden установлен и запущен" ""
+	refresh_luci_menu
+}
+
+remove_vaultwarden() {
+	write_state stopping 15 1 0 "Остановка и удаление контейнера Vaultwarden" ""
+	if docker info >/dev/null 2>&1; then
+		docker container rm -f "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 || true
+	fi
+
+	write_state removing 55 1 0 "Удаление настроек и данных Vaultwarden" ""
+	remove_vaultwarden_data
+	rm -f "$VAULTWARDEN_MARKER"
+
+	write_state cleanup 80 1 0 "Удаление образа Vaultwarden" ""
+	if docker info >/dev/null 2>&1; then
+		docker image rm "$VAULTWARDEN_IMAGE" >/dev/null 2>&1 || true
+	fi
+
+	write_state complete 100 0 1 "Vaultwarden и все его данные полностью удалены" ""
+	refresh_luci_menu
 }
 
 install_xui() {
@@ -183,6 +346,10 @@ case "$MODULE:$ACTION" in
 	docker:remove) remove_docker ;;
 	3x-ui:install) install_xui ;;
 	3x-ui:remove) remove_xui ;;
+	vaultwarden:install) install_vaultwarden ;;
+	vaultwarden:remove) remove_vaultwarden ;;
+	caddy:install) install_caddy ;;
+	caddy:remove) remove_caddy ;;
 	*) fail "Неизвестное действие" ;;
 esac
 

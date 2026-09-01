@@ -28,6 +28,8 @@ self-updates from GitHub Releases.
   removal actions;
 - one-click Docker Engine, Compose, Dockerman and Russian Dockerman
   localization installation;
+- Docker-backed 3x-ui, Vaultwarden and Caddy modules with installation,
+  removal, container state information and start/stop/restart controls;
 - GitHub release check and one-click package update;
 - Russian LuCI translation.
 
@@ -44,8 +46,8 @@ The package installs these runtime dependencies automatically: `parted`,
 
 ## Modules
 
-The **Overview** page contains a modules table. The first available module is
-Docker. Installation runs in the background and installs `dockerd`, `docker`,
+The **Overview** page contains a dependency-aware modules table. Docker
+installation runs in the background and installs `dockerd`, `docker`,
 `docker-compose`, `luci-app-dockerman` and
 `luci-i18n-dockerman-ru`, then enables and starts `dockerd` and verifies the
 engine with `docker info`.
@@ -54,8 +56,22 @@ Docker installation is offered on `aarch64` systems with at least 512 MiB of
 free root filesystem space. Removing the module removes its packages but keeps
 Docker data in `/opt/docker`.
 
-Future container modules can declare Docker as a dependency. Dependencies are
-shown to the user and are not installed implicitly by NanoPi Control.
+The following container modules declare Docker as a dependency. Dependencies
+are shown to the user and are not installed implicitly by NanoPi Control:
+
+- **3x-ui** uses the `ghcr.io/mhsanaei/3x-ui:latest` image, host networking and
+  persistent data below `/opt/3x-ui`;
+- **Vaultwarden** uses the `vaultwarden/server:latest` image, host networking,
+  port `8000` and persistent data below `/opt/vaultwarden`;
+- **Caddy** uses the lightweight official `caddy:2-alpine` image, host
+  networking and persistent configuration and data below `/opt/caddy`.
+
+Each installed container module has its own LuCI page with container metadata,
+runtime state and start, stop and restart actions. Module removal requires an
+explicit confirmation and removes the managed container, image and module data.
+Caddy is currently installed with a minimal configuration that exposes only
+its administrative API on `127.0.0.1:2019`; DNS records, HTTPS sites and
+Vaultwarden proxying are intentionally left for a later configuration stage.
 
 ## Expanding an OpenWrt SD card
 

@@ -3,14 +3,14 @@
 		"description": "Grant access to NanoPi Control status information",
 		"read": {
 			"ubus": {
-				"nanopi-control": [ "status", "migration_preflight", "migration_status", "sd_expand_info", "sd_expand_status", "modules_status", "xui_status", "update_check", "update_status" ],
+				"nanopi-control": [ "status", "migration_preflight", "migration_status", "sd_expand_info", "sd_expand_status", "modules_status", "xui_status", "vaultwarden_status", "caddy_status", "update_check", "update_status" ],
 				"network.interface": [ "dump" ],
 				"system": [ "board", "info" ]
 			}
 		},
 		"write": {
 			"ubus": {
-				"nanopi-control": [ "migration_start", "migration_confirm_boot", "migration_expand", "migration_erase", "sd_expand_start", "modules_start", "xui_action", "update_start" ]
+				"nanopi-control": [ "migration_start", "migration_confirm_boot", "migration_expand", "migration_erase", "sd_expand_start", "modules_start", "xui_action", "vaultwarden_action", "caddy_action", "update_start" ]
 			}
 		}
 	}
