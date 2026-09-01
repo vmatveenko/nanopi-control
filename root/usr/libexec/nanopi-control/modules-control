@@ -268,37 +268,70 @@ add_xui_module() {
 
 status() {
 	local docker_is_installed=0 docker_is_running=0 docker_is_enabled=0
+	local docker_api_ready=0
 	local docker_can_install=0 docker_can_remove=0 docker_reason=""
 	local xui_is_installed=0 xui_is_running=0 xui_can_install=0 xui_can_remove=0 xui_reason=""
+	local xui_has_data_state=0 xui_container_state=""
 	local vaultwarden_is_installed=0 vaultwarden_is_running=0 vaultwarden_can_install=0 vaultwarden_can_remove=0 vaultwarden_reason=""
+	local vaultwarden_has_data_state=0 vaultwarden_container_state=""
 	local caddy_is_installed=0 caddy_is_running=0 caddy_can_install=0 caddy_can_remove=0 caddy_reason=""
+	local caddy_has_data_state=0 caddy_container_state=""
 	local free
 
 	docker_installed && docker_is_installed=1
 	docker_running && docker_is_running=1
 	docker_enabled && docker_is_enabled=1
-	xui_container_exists && xui_is_installed=1
-	xui_running && xui_is_running=1
-	xui_managed && xui_can_remove=1
-	sync_xui_marker
-	vaultwarden_container_exists && vaultwarden_is_installed=1
-	vaultwarden_running && vaultwarden_is_running=1
-	vaultwarden_managed && vaultwarden_can_remove=1
-	sync_vaultwarden_marker
-	caddy_container_exists && caddy_is_installed=1
-	caddy_running && caddy_is_running=1
-	caddy_managed && caddy_can_remove=1
-	sync_caddy_marker
+	if [ "$docker_is_installed" -eq 1 ] && [ "$docker_is_running" -eq 1 ] && docker info >/dev/null 2>&1; then
+		docker_api_ready=1
+		xui_container_state="$(docker container inspect -f '{{.State.Running}}' "$XUI_CONTAINER" 2>/dev/null)"
+		vaultwarden_container_state="$(docker container inspect -f '{{.State.Running}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)"
+		caddy_container_state="$(docker container inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)"
+	fi
+
+	[ -n "$xui_container_state" ] && xui_is_installed=1
+	[ "$xui_container_state" = "true" ] && xui_is_running=1
+	xui_has_data && xui_has_data_state=1
+	if [ "$xui_is_installed" -eq 1 ] || [ "$xui_has_data_state" -eq 1 ] || [ -e "$XUI_MARKER" ]; then
+		xui_can_remove=1
+	fi
+	if [ "$xui_is_installed" -eq 1 ]; then
+		mkdir -p "${XUI_MARKER%/*}"
+		: > "$XUI_MARKER"
+	elif [ "$docker_api_ready" -eq 1 ] && [ -e "$XUI_MARKER" ] && [ "$xui_has_data_state" -ne 1 ]; then
+		rm -f "$XUI_MARKER"
+	fi
+
+	[ -n "$vaultwarden_container_state" ] && vaultwarden_is_installed=1
+	[ "$vaultwarden_container_state" = "true" ] && vaultwarden_is_running=1
+	vaultwarden_has_data && vaultwarden_has_data_state=1
+	if [ "$vaultwarden_is_installed" -eq 1 ] || [ "$vaultwarden_has_data_state" -eq 1 ] || [ -e "$VAULTWARDEN_MARKER" ]; then
+		vaultwarden_can_remove=1
+	fi
+	if [ "$vaultwarden_is_installed" -eq 1 ]; then
+		mkdir -p "${VAULTWARDEN_MARKER%/*}"
+		: > "$VAULTWARDEN_MARKER"
+	elif [ "$docker_api_ready" -eq 1 ] && [ -e "$VAULTWARDEN_MARKER" ] && [ "$vaultwarden_has_data_state" -ne 1 ]; then
+		rm -f "$VAULTWARDEN_MARKER"
+	fi
+
+	[ -n "$caddy_container_state" ] && caddy_is_installed=1
+	[ "$caddy_container_state" = "true" ] && caddy_is_running=1
+	caddy_has_data && caddy_has_data_state=1
+	if [ "$caddy_is_installed" -eq 1 ] || [ "$caddy_has_data_state" -eq 1 ] || [ -e "$CADDY_MARKER" ]; then
+		caddy_can_remove=1
+	fi
+	if [ "$caddy_is_installed" -eq 1 ]; then
+		mkdir -p "${CADDY_MARKER%/*}"
+		: > "$CADDY_MARKER"
+	elif [ "$docker_api_ready" -eq 1 ] && [ -e "$CADDY_MARKER" ] && [ "$caddy_has_data_state" -ne 1 ]; then
+		rm -f "$CADDY_MARKER"
+	fi
 
 	free="$(free_kib)"
 	case "$free" in ''|*[!0-9]*) free=0 ;; esac
 
 	if [ "$docker_is_installed" -eq 1 ]; then
-		if [ "$xui_is_installed" -eq 1 ] || [ "$vaultwarden_is_installed" -eq 1 ] || [ "$caddy_is_installed" -eq 1 ]; then
-			docker_reason="Сначала удалите все зависимые модули"
-		else
-			docker_can_remove=1
-		fi
+		docker_can_remove=1
 	elif [ "$(uname -m)" != "aarch64" ]; then
 		docker_reason="Docker доступен только для архитектуры aarch64"
 	elif [ "$free" -lt "$MIN_FREE_KIB" ]; then
@@ -309,11 +342,11 @@ status() {
 
 	if [ "$caddy_is_installed" -eq 1 ]; then
 		:
-	elif caddy_has_data || [ -e "$CADDY_MARKER" ]; then
+	elif [ "$caddy_has_data_state" -eq 1 ] || [ -e "$CADDY_MARKER" ]; then
 		caddy_reason="Обнаружены данные незавершённой установки; удалите модуль для полного сброса"
 	elif [ "$docker_is_installed" -ne 1 ]; then
 		caddy_reason="Сначала установите Docker"
-	elif [ "$docker_is_running" -ne 1 ] || ! docker info >/dev/null 2>&1; then
+	elif [ "$docker_api_ready" -ne 1 ]; then
 		caddy_reason="Служба Docker не запущена"
 	elif [ "$(uname -m)" != "aarch64" ]; then
 		caddy_reason="Caddy доступен только для архитектуры aarch64"
@@ -325,11 +358,11 @@ status() {
 
 	if [ "$vaultwarden_is_installed" -eq 1 ]; then
 		:
-	elif vaultwarden_has_data || [ -e "$VAULTWARDEN_MARKER" ]; then
+	elif [ "$vaultwarden_has_data_state" -eq 1 ] || [ -e "$VAULTWARDEN_MARKER" ]; then
 		vaultwarden_reason="Обнаружены данные незавершённой установки; удалите модуль для полного сброса"
 	elif [ "$docker_is_installed" -ne 1 ]; then
 		vaultwarden_reason="Сначала установите Docker"
-	elif [ "$docker_is_running" -ne 1 ] || ! docker info >/dev/null 2>&1; then
+	elif [ "$docker_api_ready" -ne 1 ]; then
 		vaultwarden_reason="Служба Docker не запущена"
 	elif [ "$(uname -m)" != "aarch64" ]; then
 		vaultwarden_reason="Vaultwarden доступен только для архитектуры aarch64"
@@ -343,11 +376,11 @@ status() {
 
 	if [ "$xui_is_installed" -eq 1 ]; then
 		:
-	elif xui_has_data || [ -e "$XUI_MARKER" ]; then
+	elif [ "$xui_has_data_state" -eq 1 ] || [ -e "$XUI_MARKER" ]; then
 		xui_reason="Обнаружены данные незавершённой установки; удалите модуль для полного сброса"
 	elif [ "$docker_is_installed" -ne 1 ]; then
 		xui_reason="Сначала установите Docker"
-	elif [ "$docker_is_running" -ne 1 ] || ! docker info >/dev/null 2>&1; then
+	elif [ "$docker_api_ready" -ne 1 ]; then
 		xui_reason="Служба Docker не запущена"
 	elif [ "$(uname -m)" != "aarch64" ]; then
 		xui_reason="3x-ui доступен только для архитектуры aarch64"
@@ -396,28 +429,12 @@ start_job() {
 			fi
 			;;
 		docker:remove)
-			if [ "$confirmation" != "REMOVE_DOCKER" ]; then
-				printf '%s\n' '{ "accepted": false, "error": "Удаление Docker не подтверждено" }'
+			if [ "$confirmation" != "REMOVE_DOCKER_ALL" ]; then
+				printf '%s\n' '{ "accepted": false, "error": "Удаление Docker и зависимых модулей не подтверждено" }'
 				exit 1
 			fi
 			if ! docker_installed; then
 				printf '%s\n' '{ "accepted": false, "error": "Docker не установлен" }'
-				exit 1
-			fi
-			if xui_container_exists && vaultwarden_container_exists; then
-				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимые модули 3x-ui и Vaultwarden" }'
-				exit 1
-			fi
-			if xui_container_exists; then
-				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль 3x-ui" }'
-				exit 1
-			fi
-			if vaultwarden_container_exists; then
-				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль Vaultwarden" }'
-				exit 1
-			fi
-			if caddy_container_exists; then
-				printf '%s\n' '{ "accepted": false, "error": "Сначала удалите зависимый модуль Caddy" }'
 				exit 1
 			fi
 			;;

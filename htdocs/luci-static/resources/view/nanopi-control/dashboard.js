@@ -231,15 +231,18 @@ return view.extend({
 					const isXui = module.id === '3x-ui';
 					const isVaultwarden = module.id === 'vaultwarden';
 					const moduleName = isDocker ? 'Docker' : isXui ? '3x-ui' : isVaultwarden ? 'Vaultwarden' : 'Caddy';
-					ui.showModal('Удаление ' + moduleName, [
+					const dependents = (module.dependents || []).join(', ');
+					ui.showModal(isDocker ? 'Удаление Docker и всех модулей' : 'Удаление ' + moduleName, [
 						E('p', {}, isDocker
-							? 'Пакеты Docker будут удалены. Данные контейнеров в /opt/docker сохранятся.'
+							? 'Docker будет удалён вместе со всеми модулями NanoPi Control' + (dependents ? ': ' + dependents + '.' : '.')
 							: isXui
 								? 'Контейнер, образ, база данных, сертификаты и все настройки 3x-ui будут полностью удалены.'
 								: isVaultwarden
 									? 'Контейнер, образ, база данных и все настройки Vaultwarden будут полностью удалены.'
 									: 'Контейнер, образ, конфигурация и все данные Caddy будут полностью удалены.'),
-						!isDocker ? E('p', { 'style': 'color:#b42318' }, 'После повторной установки ' + moduleName + ' будет запущен с настройками по умолчанию.') : '',
+						isDocker
+							? E('p', { 'style': 'color:#b42318;font-weight:600' }, 'Контейнеры, образы, настройки и данные 3x-ui, Vaultwarden и Caddy будут удалены без возможности восстановления. Посторонние контейнеры и данные в /opt/docker сохранятся.')
+							: E('p', { 'style': 'color:#b42318' }, 'После повторной установки ' + moduleName + ' будет запущен с настройками по умолчанию.'),
 						E('div', { 'class': 'right' }, [
 							E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'),
 							' ',
@@ -247,9 +250,9 @@ return view.extend({
 								'class': 'btn cbi-button cbi-button-negative important',
 								'click': ui.createHandlerFn(view, function() {
 									ui.hideModal();
-									return view.startModuleAction(module.id, 'remove', isDocker ? 'REMOVE_DOCKER' : isXui ? 'REMOVE_3X_UI' : isVaultwarden ? 'REMOVE_VAULTWARDEN' : 'REMOVE_CADDY', container);
+									return view.startModuleAction(module.id, 'remove', isDocker ? 'REMOVE_DOCKER_ALL' : isXui ? 'REMOVE_3X_UI' : isVaultwarden ? 'REMOVE_VAULTWARDEN' : 'REMOVE_CADDY', container);
 								})
-							}, 'Удалить')
+							}, isDocker ? 'Удалить всё' : 'Удалить')
 						])
 					]);
 				}));

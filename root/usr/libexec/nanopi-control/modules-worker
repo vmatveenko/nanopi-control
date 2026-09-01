@@ -55,8 +55,7 @@ refresh_luci_menu() {
 }
 
 remove_xui_data() {
-	rm -rf /opt/3x-ui/db /opt/3x-ui/cert
-	rmdir /opt/3x-ui >/dev/null 2>&1 || true
+	rm -rf "$XUI_DATA_DIR"
 }
 
 remove_vaultwarden_data() {
@@ -141,19 +140,48 @@ install_docker() {
 }
 
 remove_docker() {
-	docker container inspect "$XUI_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль 3x-ui"
-	docker container inspect "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль Vaultwarden"
-	docker container inspect "$CADDY_CONTAINER" >/dev/null 2>&1 && fail "Сначала удалите зависимый модуль Caddy"
+	write_state preparing 5 1 0 "Подготовка каскадного удаления Docker" ""
+	if ! docker info >/dev/null 2>&1; then
+		/etc/init.d/dockerd start >/dev/null 2>&1 || true
+		attempt=0
+		while [ "$attempt" -lt 15 ]; do
+			docker info >/dev/null 2>&1 && break
+			attempt=$((attempt + 1))
+			sleep 2
+		done
+	fi
+	docker info >/dev/null 2>&1 || fail "Служба Docker не отвечает: безопасное удаление контейнеров невозможно"
 
-	write_state stopping 15 1 0 "Остановка Docker" ""
+	write_state removing 15 1 0 "Удаление контейнера и данных 3x-ui" ""
+	docker container rm -f "$XUI_CONTAINER" >/dev/null 2>&1 || true
+	remove_xui_data
+	rm -f "$XUI_MARKER"
+
+	write_state removing 30 1 0 "Удаление контейнера и данных Vaultwarden" ""
+	docker container rm -f "$VAULTWARDEN_CONTAINER" >/dev/null 2>&1 || true
+	remove_vaultwarden_data
+	rm -f "$VAULTWARDEN_MARKER"
+
+	write_state removing 45 1 0 "Удаление контейнера и данных Caddy" ""
+	docker container rm -f "$CADDY_CONTAINER" >/dev/null 2>&1 || true
+	remove_caddy_data
+	rm -f "$CADDY_MARKER"
+
+	write_state cleanup 60 1 0 "Удаление образов управляемых модулей" ""
+	docker image rm "$XUI_IMAGE" >/dev/null 2>&1 || true
+	docker image rm "$VAULTWARDEN_IMAGE" >/dev/null 2>&1 || true
+	docker image rm "$CADDY_IMAGE" >/dev/null 2>&1 || true
+
+	write_state stopping 75 1 0 "Остановка Docker" ""
 	/etc/init.d/dockerd stop >/dev/null 2>&1 || true
 	/etc/init.d/dockerd disable >/dev/null 2>&1 || true
 
-	write_state removing 45 1 0 "Удаление пакетов Docker" ""
+	write_state removing 85 1 0 "Удаление пакетов Docker" ""
 	apk del luci-i18n-dockerman-ru luci-app-dockerman docker-compose docker dockerd || fail "Не удалось удалить пакеты Docker"
 
-	clear_luci_cache
-	write_state complete 100 0 1 "Docker удалён. Данные в /opt/docker сохранены" ""
+	write_state cleanup 95 1 0 "Обновление меню LuCI" ""
+	refresh_luci_menu
+	write_state complete 100 0 1 "Docker и все зависимые модули полностью удалены. Данные /opt/docker сохранены" ""
 }
 
 install_caddy() {
