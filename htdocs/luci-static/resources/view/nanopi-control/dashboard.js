@@ -323,9 +323,20 @@ return view.extend({
 
 	renderUpdate: function(update, container) {
 		const view = this;
-		const checking = update.status === 'checking' || update.status === 'downloading' || update.status === 'verifying' || update.status === 'installing';
+		const checking = update.status === 'checking' || update.status === 'queued' || update.status === 'downloading' ||
+			update.status === 'verifying' || update.status === 'installing' || update.status === 'restarting';
 		const available = !!update.update_available;
 		const color = update.error ? '#b42318' : available ? '#d97706' : update.status === 'current' || update.status === 'complete' ? '#16803a' : '#0066cc';
+		const percent = Math.max(0, Math.min(100, Number(update.percent || 0)));
+		const progress = checking ? E('div', { 'style': 'margin:8px 0 12px' }, [
+			E('div', { 'style': 'display:flex;justify-content:space-between;gap:12px;margin-bottom:5px' }, [
+				E('span', {}, update.message || 'Выполнение обновления'),
+				E('span', {}, '%d%%'.format(percent))
+			]),
+			E('div', { 'style': 'height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden' }, [
+				E('div', { 'style': 'height:100%;width:' + percent + '%;background:#0066cc;transition:width .3s' })
+			])
+		]) : '';
 
 		const checkButton = E('button', {
 			'class': 'btn cbi-button cbi-button-action'
@@ -360,6 +371,8 @@ return view.extend({
 								if (state.status === 'complete')
 									window.setTimeout(function() { window.location.reload(); }, 1800);
 							}
+						}).catch(function() {
+							/* rpcd may be briefly unavailable while the update restarts services */
 						});
 					}, 1500);
 				}).catch(function(error) {
@@ -379,7 +392,9 @@ return view.extend({
 				E('strong', {}, _('Latest release')),
 				E('span', { 'style': 'color:%s;font-weight:%s'.format(color, available ? 'bold' : 'normal') }, update.latest_version || _('Not checked'))
 			]),
-			E('p', { 'style': 'color:%s'.format(color) }, update.error || update.message || _('Updates have not been checked')),
+			checking ? '' : E('p', { 'style': 'color:%s'.format(color) }, update.error || update.message || _('Updates have not been checked')),
+			progress,
+			update.error && update.log_path ? E('p', { 'style': 'color:#666' }, 'Журнал: ' + update.log_path) : '',
 			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap' }, buttons)
 		]);
 	},

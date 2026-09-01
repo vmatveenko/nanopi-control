@@ -130,6 +130,11 @@ The updater:
 5. restarts NanoPi Control, rpcd and uhttpd;
 6. reloads the LuCI page.
 
+Update progress is stored in `/tmp/nanopi-control/update.json` and detailed
+worker output is written to `/tmp/nanopi-control/update.log`. The updater
+verifies the installed version after `apk` completes, recovers stale operation
+locks and never replaces a newer installed version with an older release.
+
 The repository can be changed through the UCI option
 `nanopi-control.main.repository` for development forks.
 
