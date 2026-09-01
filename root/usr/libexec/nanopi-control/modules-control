@@ -140,7 +140,8 @@ sync_caddy_marker() {
 }
 
 add_job() {
-	local running status module action percent message error success
+	local running status module action percent message error success detail
+	local current_bytes total_bytes speed_bytes_per_second started_at elapsed_seconds updated_at
 
 	json_add_object job
 	if [ -r "$STATE_FILE" ]; then
@@ -152,6 +153,19 @@ add_job() {
 		message="$(jsonfilter -i "$STATE_FILE" -e '@.message' 2>/dev/null)"
 		error="$(jsonfilter -i "$STATE_FILE" -e '@.error' 2>/dev/null)"
 		success="$(jsonfilter -i "$STATE_FILE" -e '@.success' 2>/dev/null)"
+		detail="$(jsonfilter -i "$STATE_FILE" -e '@.detail' 2>/dev/null)"
+		current_bytes="$(jsonfilter -i "$STATE_FILE" -e '@.current_bytes' 2>/dev/null)"
+		total_bytes="$(jsonfilter -i "$STATE_FILE" -e '@.total_bytes' 2>/dev/null)"
+		speed_bytes_per_second="$(jsonfilter -i "$STATE_FILE" -e '@.speed_bytes_per_second' 2>/dev/null)"
+		started_at="$(jsonfilter -i "$STATE_FILE" -e '@.started_at' 2>/dev/null)"
+		elapsed_seconds="$(jsonfilter -i "$STATE_FILE" -e '@.elapsed_seconds' 2>/dev/null)"
+		updated_at="$(jsonfilter -i "$STATE_FILE" -e '@.updated_at' 2>/dev/null)"
+		case "$current_bytes" in ''|*[!0-9]*) current_bytes=0 ;; esac
+		case "$total_bytes" in ''|*[!0-9]*) total_bytes=0 ;; esac
+		case "$speed_bytes_per_second" in ''|*[!0-9]*) speed_bytes_per_second=0 ;; esac
+		case "$started_at" in ''|*[!0-9]*) started_at=0 ;; esac
+		case "$elapsed_seconds" in ''|*[!0-9]*) elapsed_seconds=0 ;; esac
+		case "$updated_at" in ''|*[!0-9]*) updated_at=0 ;; esac
 		[ "$running" = "true" ] && json_add_boolean running 1 || json_add_boolean running 0
 		[ "$success" = "true" ] && json_add_boolean success 1 || json_add_boolean success 0
 		json_add_string status "${status:-idle}"
@@ -160,6 +174,13 @@ add_job() {
 		json_add_int percent "${percent:-0}"
 		json_add_string message "${message:-}"
 		json_add_string error "${error:-}"
+		json_add_string detail "${detail:-}"
+		json_add_int current_bytes "$current_bytes"
+		json_add_int total_bytes "$total_bytes"
+		json_add_int speed_bytes_per_second "$speed_bytes_per_second"
+		json_add_int started_at "$started_at"
+		json_add_int elapsed_seconds "$elapsed_seconds"
+		json_add_int updated_at "$updated_at"
 	else
 		json_add_boolean running 0
 		json_add_boolean success 0
@@ -169,6 +190,13 @@ add_job() {
 		json_add_int percent 0
 		json_add_string message ""
 		json_add_string error ""
+		json_add_string detail ""
+		json_add_int current_bytes 0
+		json_add_int total_bytes 0
+		json_add_int speed_bytes_per_second 0
+		json_add_int started_at 0
+		json_add_int elapsed_seconds 0
+		json_add_int updated_at 0
 	fi
 	json_close_object
 }

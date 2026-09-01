@@ -19,6 +19,11 @@ CADDY_IMAGE="caddy:2-alpine"
 CADDY_CONTAINER="caddy"
 CADDY_DATA_DIR="/opt/caddy"
 CADDY_MARKER="/etc/nanopi-control/caddy-installed"
+JOB_LOG="$RUNTIME_DIR/modules-operation.log"
+PROGRESS_FILE="$RUNTIME_DIR/modules-progress"
+PROGRESS_FLAG="$RUNTIME_DIR/modules-progress.active"
+JOB_STARTED_AT="$(date +%s)"
+MONITOR_PID=""
 FINISHED=0
 XUI_CREATED=0
 VAULTWARDEN_CREATED=0
@@ -28,7 +33,14 @@ CADDY_CREATED=0
 
 write_state() {
 	local status="$1" percent="$2" running="$3" success="$4" message="$5" error="$6"
+	local detail="${7:-}" current_bytes="${8:-0}" total_bytes="${9:-0}" speed_bytes="${10:-0}"
+	local now elapsed
 	local tmp="$STATE_FILE.tmp.$$"
+	now="$(date +%s)"
+	elapsed=$((now - JOB_STARTED_AT))
+	case "$current_bytes" in ''|*[!0-9]*) current_bytes=0 ;; esac
+	case "$total_bytes" in ''|*[!0-9]*) total_bytes=0 ;; esac
+	case "$speed_bytes" in ''|*[!0-9]*) speed_bytes=0 ;; esac
 
 	json_init
 	json_add_string module "$MODULE"
@@ -39,9 +51,112 @@ write_state() {
 	json_add_boolean success "$success"
 	json_add_string message "$message"
 	json_add_string error "$error"
-	json_add_int updated_at "$(date +%s)"
+	json_add_string detail "$detail"
+	json_add_int current_bytes "$current_bytes"
+	json_add_int total_bytes "$total_bytes"
+	json_add_int speed_bytes_per_second "$speed_bytes"
+	json_add_int started_at "$JOB_STARTED_AT"
+	json_add_int elapsed_seconds "$elapsed"
+	json_add_int updated_at "$now"
 	json_dump > "$tmp"
 	mv "$tmp" "$STATE_FILE"
+}
+
+stop_progress_monitor() {
+	rm -f "$PROGRESS_FLAG"
+	if [ -n "$MONITOR_PID" ]; then
+		wait "$MONITOR_PID" 2>/dev/null || true
+		MONITOR_PID=""
+	fi
+}
+
+apk_operation_detail() {
+	local operation count package
+	operation="$(grep -E '^\([0-9]+/[0-9]+\) Installing |^Downloading ' "$JOB_LOG" 2>/dev/null | tail -n 1)"
+	case "$operation" in
+		\(*\)\ Installing\ *)
+			count="${operation#(}"
+			count="${count%%)*}"
+			package="${operation#*) Installing }"
+			printf 'Пакет %s: %s' "$count" "$package"
+			;;
+		Downloading\ *)
+			printf 'Скачивание %s' "${operation#Downloading }"
+			;;
+	esac
+}
+
+monitor_apk_progress() {
+	local status="$1" base="$2" span="$3" message="$4"
+	local line current total now monitor_started percent speed detail
+	trap - EXIT INT TERM
+	monitor_started="$(date +%s)"
+	while [ -e "$PROGRESS_FLAG" ]; do
+		line="$(tail -n 1 "$PROGRESS_FILE" 2>/dev/null)"
+		current=0
+		total=0
+		case "$line" in
+			*/*)
+				current="${line%%/*}"
+				line="${line#*/}"
+				total="${line%% *}"
+				;;
+		esac
+		case "$current" in ''|*[!0-9]*) current=0 ;; esac
+		case "$total" in ''|*[!0-9]*) total=0 ;; esac
+		now="$(date +%s)"
+		speed=0
+		if [ "$now" -gt "$monitor_started" ] && [ "$current" -gt 0 ]; then
+			speed=$((current / (now - monitor_started)))
+		fi
+		percent="$base"
+		if [ "$total" -gt 0 ]; then
+			percent=$((base + current * span / total))
+			[ "$percent" -gt $((base + span)) ] && percent=$((base + span))
+		fi
+		detail="$(apk_operation_detail)"
+		[ -n "$detail" ] || detail="Ожидание данных от репозитория"
+		write_state "$status" "$percent" 1 0 "$message" "" "$detail" "$current" "$total" "$speed"
+		sleep 2
+	done
+}
+
+run_apk_with_progress() {
+	local status="$1" base="$2" span="$3" message="$4"
+	shift 4
+	: > "$JOB_LOG"
+	: > "$PROGRESS_FILE"
+	: > "$PROGRESS_FLAG"
+	monitor_apk_progress "$status" "$base" "$span" "$message" &
+	MONITOR_PID=$!
+	apk --progress --progress-fd 3 "$@" > "$JOB_LOG" 2>&1 3> "$PROGRESS_FILE"
+	local rc=$?
+	stop_progress_monitor
+	return "$rc"
+}
+
+monitor_command_progress() {
+	local status="$1" percent="$2" message="$3" detail
+	trap - EXIT INT TERM
+	while [ -e "$PROGRESS_FLAG" ]; do
+		detail="$(tail -n 1 "$JOB_LOG" 2>/dev/null | tr '\r' '\n' | tail -n 1 | cut -c1-200)"
+		[ -n "$detail" ] || detail="Ожидание ответа"
+		write_state "$status" "$percent" 1 0 "$message" "" "$detail"
+		sleep 2
+	done
+}
+
+run_with_heartbeat() {
+	local status="$1" percent="$2" message="$3"
+	shift 3
+	: > "$JOB_LOG"
+	: > "$PROGRESS_FLAG"
+	monitor_command_progress "$status" "$percent" "$message" &
+	MONITOR_PID=$!
+	"$@" > "$JOB_LOG" 2>&1
+	local rc=$?
+	stop_progress_monitor
+	return "$rc"
 }
 
 clear_luci_cache() {
@@ -104,6 +219,8 @@ fail() {
 
 cleanup() {
 	local rc=$?
+	stop_progress_monitor
+	rm -f "$PROGRESS_FILE" "$PROGRESS_FLAG"
 	rm -f "$PID_FILE"
 	rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
 	if [ "$rc" -ne 0 ] && [ "$FINISHED" -ne 1 ]; then
@@ -113,11 +230,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 install_docker() {
-	write_state updating 10 1 0 "Обновление списка пакетов" ""
-	apk update || fail "Не удалось обновить список пакетов apk"
+	write_state updating 5 1 0 "Обновление списка пакетов" "" "Подключение к репозиториям"
+	run_apk_with_progress updating 5 10 "Обновление списка пакетов" update || fail "Не удалось обновить список пакетов apk"
 
-	write_state installing 35 1 0 "Установка Docker и веб-интерфейса" ""
-	apk add dockerd docker docker-compose luci-app-dockerman luci-i18n-dockerman-ru || fail "Не удалось установить пакеты Docker"
+	write_state installing 15 1 0 "Загрузка и установка Docker" "" "Расчёт зависимостей"
+	run_apk_with_progress installing 15 55 "Загрузка и установка Docker" add dockerd docker docker-compose luci-app-dockerman luci-i18n-dockerman-ru || fail "Не удалось установить пакеты Docker"
 
 	write_state enabling 75 1 0 "Включение автозапуска Docker" ""
 	/etc/init.d/dockerd enable || fail "Не удалось включить автозапуск Docker"
@@ -128,6 +245,7 @@ install_docker() {
 	write_state verifying 95 1 0 "Проверка установки Docker" ""
 	attempt=0
 	while [ "$attempt" -lt 15 ]; do
+		write_state verifying "$((90 + attempt * 5 / 15))" 1 0 "Проверка установки Docker" "" "Ожидание Docker API: попытка $((attempt + 1)) из 15"
 		docker info >/dev/null 2>&1 && break
 		attempt=$((attempt + 1))
 		sleep 2
@@ -195,7 +313,7 @@ install_caddy() {
 	CADDY_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа Caddy" ""
-	docker image pull "$CADDY_IMAGE" || fail "Не удалось загрузить образ Caddy"
+	run_with_heartbeat downloading 25 "Загрузка образа Caddy" docker image pull "$CADDY_IMAGE" || fail "Не удалось загрузить образ Caddy"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера Caddy" ""
 	docker run -d \
@@ -210,6 +328,7 @@ install_caddy() {
 	write_state verifying 90 1 0 "Проверка запуска Caddy" ""
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
+		write_state verifying "$((90 + attempt * 9 / 20))" 1 0 "Проверка запуска Caddy" "" "Проверка контейнера: попытка $((attempt + 1)) из 20"
 		[ "$(docker container inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" = "true" ] && \
 			docker exec "$CADDY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 && break
 		attempt=$((attempt + 1))
@@ -222,8 +341,8 @@ install_caddy() {
 	mkdir -p "${CADDY_MARKER%/*}"
 	: > "$CADDY_MARKER"
 	CADDY_CREATED=0
-	write_state complete 100 0 1 "Caddy установлен и запущен" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "Caddy установлен и запущен" ""
 }
 
 remove_caddy() {
@@ -241,8 +360,8 @@ remove_caddy() {
 		docker image rm "$CADDY_IMAGE" >/dev/null 2>&1 || true
 	fi
 
-	write_state complete 100 0 1 "Caddy и все его данные полностью удалены" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "Caddy и все его данные полностью удалены" ""
 }
 
 install_vaultwarden() {
@@ -256,7 +375,7 @@ install_vaultwarden() {
 	VAULTWARDEN_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа Vaultwarden" ""
-	docker image pull "$VAULTWARDEN_IMAGE" || fail "Не удалось загрузить образ Vaultwarden"
+	run_with_heartbeat downloading 25 "Загрузка образа Vaultwarden" docker image pull "$VAULTWARDEN_IMAGE" || fail "Не удалось загрузить образ Vaultwarden"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера Vaultwarden" ""
 	docker run -d \
@@ -271,6 +390,7 @@ install_vaultwarden() {
 	write_state verifying 90 1 0 "Проверка запуска Vaultwarden" ""
 	attempt=0
 	while [ "$attempt" -lt 30 ]; do
+		write_state verifying "$((90 + attempt * 9 / 30))" 1 0 "Проверка запуска Vaultwarden" "" "Health-проверка: попытка $((attempt + 1)) из 30"
 		[ "$(docker container inspect -f '{{.State.Running}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)" = "true" ] && \
 			uclient-fetch -q -T 3 -O /dev/null "http://127.0.0.1:$VAULTWARDEN_PORT/alive" 2>/dev/null && break
 		attempt=$((attempt + 1))
@@ -283,8 +403,8 @@ install_vaultwarden() {
 	mkdir -p "${VAULTWARDEN_MARKER%/*}"
 	: > "$VAULTWARDEN_MARKER"
 	VAULTWARDEN_CREATED=0
-	write_state complete 100 0 1 "Vaultwarden установлен и запущен" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "Vaultwarden установлен и запущен" ""
 }
 
 remove_vaultwarden() {
@@ -302,8 +422,8 @@ remove_vaultwarden() {
 		docker image rm "$VAULTWARDEN_IMAGE" >/dev/null 2>&1 || true
 	fi
 
-	write_state complete 100 0 1 "Vaultwarden и все его данные полностью удалены" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "Vaultwarden и все его данные полностью удалены" ""
 }
 
 install_xui() {
@@ -317,7 +437,7 @@ install_xui() {
 	XUI_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа 3x-ui" ""
-	docker image pull "$XUI_IMAGE" || fail "Не удалось загрузить образ 3x-ui"
+	run_with_heartbeat downloading 25 "Загрузка образа 3x-ui" docker image pull "$XUI_IMAGE" || fail "Не удалось загрузить образ 3x-ui"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера 3x-ui" ""
 	docker run -d \
@@ -335,6 +455,7 @@ install_xui() {
 	write_state verifying 90 1 0 "Проверка запуска 3x-ui" ""
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
+		write_state verifying "$((90 + attempt * 9 / 20))" 1 0 "Проверка запуска 3x-ui" "" "Проверка контейнера: попытка $((attempt + 1)) из 20"
 		[ "$(docker container inspect -f '{{.State.Running}}' "$XUI_CONTAINER" 2>/dev/null)" = "true" ] && break
 		attempt=$((attempt + 1))
 		sleep 2
@@ -346,8 +467,8 @@ install_xui() {
 	mkdir -p "${XUI_MARKER%/*}"
 	: > "$XUI_MARKER"
 	XUI_CREATED=0
-	write_state complete 100 0 1 "3x-ui установлен и запущен с настройками по умолчанию" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "3x-ui установлен и запущен с настройками по умолчанию" ""
 }
 
 remove_xui() {
@@ -365,8 +486,8 @@ remove_xui() {
 		docker image rm "$XUI_IMAGE" >/dev/null 2>&1 || true
 	fi
 
-	write_state complete 100 0 1 "3x-ui и все его настройки полностью удалены" ""
 	refresh_luci_menu
+	write_state complete 100 0 1 "3x-ui и все его настройки полностью удалены" ""
 }
 
 case "$MODULE:$ACTION" in

@@ -155,6 +155,24 @@ function sdProgress(job) {
 function moduleJobProgress(job) {
 	let percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
 	let color = job.error ? '#b42318' : job.success ? '#16803a' : '#0066cc';
+	let current = Number(job.current_bytes || 0);
+	let total = Number(job.total_bytes || 0);
+	let speed = Number(job.speed_bytes_per_second || 0);
+	let elapsed = Math.max(0, Number(job.elapsed_seconds || 0));
+	let age = job.updated_at ? Math.max(0, Math.floor(Date.now() / 1000 - Number(job.updated_at))) : 0;
+	let minutes = Math.floor(elapsed / 60);
+	let seconds = Math.floor(elapsed % 60);
+	let meta = [];
+
+	if (total > 0)
+		meta.push('%s из %s'.format(formatBytes(current), formatBytes(total)));
+	if (speed > 0)
+		meta.push('%s/с'.format(formatBytes(speed)));
+	if (elapsed > 0)
+		meta.push('прошло ' + (minutes ? '%d мин %d сек'.format(minutes, seconds) : '%d сек'.format(seconds)));
+	if (job.running && age > 10)
+		meta.push('нет обновления %d сек'.format(age));
+
 	return E('div', { 'style': 'min-width:260px' }, [
 		E('div', { 'style': 'display:flex;justify-content:space-between;gap:12px;margin-bottom:5px' }, [
 			E('span', {}, job.message || 'Выполнение операции'),
@@ -163,6 +181,8 @@ function moduleJobProgress(job) {
 		E('div', { 'style': 'height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden' }, [
 			E('div', { 'style': 'height:100%;width:' + percent + '%;background:' + color + ';transition:width .3s' })
 		]),
+		job.detail ? E('div', { 'style': 'margin-top:6px' }, job.detail) : '',
+		meta.length ? E('div', { 'style': 'color:#666;margin-top:3px;font-size:90%' }, meta.join(' · ')) : '',
 		job.error ? E('div', { 'style': 'color:#b42318;margin-top:5px' }, job.error) : ''
 	]);
 }
@@ -179,10 +199,18 @@ return view.extend({
 				container.replaceChildren(view.renderModules(state, container));
 				if (!state.job || !state.job.running) {
 					window.clearInterval(timer);
-					if (state.job && (state.job.module === '3x-ui' || state.job.module === 'vaultwarden' || state.job.module === 'caddy') && state.job.success)
+					const menuChanged = state.job && state.job.success && (
+						state.job.module === '3x-ui' ||
+						state.job.module === 'vaultwarden' ||
+						state.job.module === 'caddy' ||
+						(state.job.module === 'docker' && state.job.action === 'remove')
+					);
+					if (menuChanged) {
+						ui.menu.flushCache();
 						window.setTimeout(function() {
 							window.location.href = window.location.pathname + '?refresh=' + Date.now();
 						}, 700);
+					}
 				}
 			});
 		}, 1000);
