@@ -2,6 +2,33 @@
 
 CONTAINER="3x-ui"
 MARKER="/etc/nanopi-control/3x-ui-installed"
+TOKEN_FILE="/etc/nanopi-control/3xui-api-token"
+LOCK_FILE="/tmp/nanopi-control/3xui.lock"
+NFT_FAMILY="inet"
+NFT_TABLE="nanopi_xui"
+TUN_NAME="xray0"
+TUN_TAG="nanopi-control-tun-in"
+TUN_REMARK="NanoPi Control LAN TUN"
+TOKEN_NAME="openwrt-api-token"
+PANEL_PORT=2053
+MARK_VALUE="0x40000000"
+MARK_MASK="0x40000000"
+RULE4_PRIORITY=11000
+RULE6_PRIORITY=11001
+TABLE4=100
+TABLE6=101
+TUN4_ADDRESS="172.19.0.1/30"
+TUN6_ADDRESS="fd7a:7875:6900::1/126"
+FW4_INCLUDE_DIR="/usr/share/nftables.d/chain-pre/forward"
+FW4_INCLUDE="$FW4_INCLUDE_DIR/30-nanopi-xui.nft"
+LAST_ERROR=""
+API_RESPONSE=""
+API_AUTH_FAILED=0
+FOUND_ID=""
+FOUND_SCOPE=""
+FOUND_CONFLICT=""
+ISSUED_TOKEN=""
+WORKING_TOKEN=""
 
 . /usr/share/libubox/jshn.sh
 
@@ -13,13 +40,45 @@ container_exists() {
 	docker_ready && docker container inspect "$CONTAINER" >/dev/null 2>&1
 }
 
+container_running() {
+	container_exists && [ "$(docker container inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]
+}
+
+tun_runtime_ready() {
+	[ -c /dev/net/tun ] || {
+		LAST_ERROR="На OpenWrt отсутствует /dev/net/tun. Установите и загрузите модуль kmod-tun"
+		return 1
+	}
+	docker container inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}}:{{.PathInContainer}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx '/dev/net/tun:/dev/net/tun' || {
+		LAST_ERROR="Контейнер 3x-ui создан без доступа к /dev/net/tun. Переустановите контейнер из панели NanoPi Control"
+		return 1
+	}
+	return 0
+}
+
 clear_luci_cache() {
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache
 }
 
+take_lock() {
+	mkdir -p /tmp/nanopi-control
+	exec 9>"$LOCK_FILE"
+	flock -x 9
+}
+
+json_result() {
+	local accepted="$1" message="$2" error="$3" warning="$4"
+	json_init
+	json_add_boolean accepted "$accepted"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_string warning "$warning"
+	json_dump
+}
+
 status() {
-	local id state running image created started restart_policy network_mode version fail2ban
+	local id state running image created started restart_policy network_mode version fail2ban routing_active degraded
 
 	if ! container_exists; then
 		if docker_ready && [ -e "$MARKER" ]; then
@@ -30,6 +89,8 @@ status() {
 		json_add_boolean installed 0
 		json_add_boolean running 0
 		json_add_string state absent
+		json_add_boolean routing_active "$(routing_is_active && echo 1 || echo 0)"
+		json_add_boolean routing_degraded "$(routing_is_active && echo 1 || echo 0)"
 		json_add_string error "Контейнер 3x-ui не найден"
 		json_dump
 		return
@@ -49,6 +110,14 @@ status() {
 		version="$(docker exec "$CONTAINER" /app/x-ui -v 2>&1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 	fi
 	fail2ban="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null | awk -F= '$1 == "XUI_ENABLE_FAIL2BAN" { print $2; exit }')"
+	routing_active=0
+	degraded=0
+	if routing_is_active; then
+		routing_active=1
+		if [ "$running" -ne 1 ] || ! ip link show dev "$TUN_NAME" >/dev/null 2>&1; then
+			degraded=1
+		fi
+	fi
 
 	json_init
 	json_add_boolean installed 1
@@ -62,53 +131,750 @@ status() {
 	json_add_string restart_policy "$restart_policy"
 	json_add_string network_mode "$network_mode"
 	json_add_string fail2ban "${fail2ban:-false}"
-	json_add_string panel_port 2053
+	json_add_string panel_port "$PANEL_PORT"
 	json_add_string data_path /opt/3x-ui
+	json_add_boolean routing_active "$routing_active"
+	json_add_boolean routing_degraded "$degraded"
 	json_add_string error ""
 	json_dump
 }
 
 action() {
-	local requested="$1"
+	local requested="$1" was_active=0 warning=""
 
+	take_lock
 	container_exists || {
-		printf '%s\n' '{ "accepted": false, "error": "Контейнер 3x-ui не найден" }'
+		json_result 0 "" "Контейнер 3x-ui не найден" ""
 		exit 1
 	}
+	routing_is_active && was_active=1
 
 	case "$requested" in
 		start)
 			docker container start "$CONTAINER" >/dev/null || {
-				printf '%s\n' '{ "accepted": false, "error": "Не удалось запустить 3x-ui" }'
+				json_result 0 "" "Не удалось запустить 3x-ui" ""
 				exit 1
 			}
 			;;
 		stop)
 			docker container stop -t 10 "$CONTAINER" >/dev/null || {
-				printf '%s\n' '{ "accepted": false, "error": "Не удалось остановить 3x-ui" }'
+				json_result 0 "" "Не удалось остановить 3x-ui" ""
 				exit 1
 			}
+			if [ "$was_active" -eq 1 ]; then
+				warning="Маршрутизация оставлена в режиме fail-closed. Доступ LAN в интернет возобновится после запуска 3x-ui или отключения маршрутизации."
+			fi
 			;;
 		restart)
 			docker container restart -t 10 "$CONTAINER" >/dev/null || {
-				printf '%s\n' '{ "accepted": false, "error": "Не удалось перезапустить 3x-ui" }'
+				json_result 0 "" "Не удалось перезапустить 3x-ui" ""
 				exit 1
 			}
 			;;
 		*)
-			printf '%s\n' '{ "accepted": false, "error": "Неизвестное действие с 3x-ui" }'
+			json_result 0 "" "Неизвестное действие с 3x-ui" ""
 			exit 1
 			;;
 	esac
 
-	printf '%s\n' '{ "accepted": true }'
+	if [ "$was_active" -eq 1 ] && [ "$requested" != "stop" ]; then
+		if wait_for_tun 20 && apply_routing_rules; then
+			:
+		else
+			warning="Контейнер запущен, но маршрут через xray0 пока не восстановлен. Сохраняется fail-closed. ${LAST_ERROR}"
+		fi
+	fi
+	json_result 1 "Действие выполнено" "" "$warning"
+}
+
+api_request() {
+	local method="$1" path="$2" token="$3" body="$4"
+	local response_file="/tmp/nanopi-control/xui-api-response.$$"
+	local error_file="/tmp/nanopi-control/xui-api-error.$$"
+	local url="http://127.0.0.1:${PANEL_PORT}${path}" rc
+
+	API_RESPONSE=""
+	API_AUTH_FAILED=0
+	rm -f "$response_file" "$error_file"
+	if [ "$method" = "GET" ]; then
+		uclient-fetch -O "$response_file" --timeout=15 --no-proxy \
+			--header="Authorization: Bearer $token" \
+			--header="Accept: application/json" \
+			--header="X-Requested-With: XMLHttpRequest" \
+			"$url" 2>"$error_file"
+		rc=$?
+	else
+		uclient-fetch -O "$response_file" --timeout=15 --no-proxy \
+			--method="$method" --body-data="$body" \
+			--header="Authorization: Bearer $token" \
+			--header="Accept: application/json" \
+			--header="Content-Type: application/json" \
+			--header="X-Requested-With: XMLHttpRequest" \
+			"$url" 2>"$error_file"
+		rc=$?
+	fi
+	[ -f "$response_file" ] && API_RESPONSE="$(cat "$response_file")"
+	if [ "$rc" -ne 0 ]; then
+		if grep -Eq 'HTTP error (401|403)' "$error_file" 2>/dev/null; then
+			API_AUTH_FAILED=1
+			LAST_ERROR="API-токен 3x-ui отклонён"
+		else
+			LAST_ERROR="Панель 3x-ui недоступна: $(tail -n 1 "$error_file" 2>/dev/null)"
+		fi
+		rm -f "$response_file" "$error_file"
+		return 1
+	fi
+	rm -f "$response_file" "$error_file"
+	return 0
+}
+
+api_success() {
+	[ "$(jsonfilter -s "$1" -e '@.success' 2>/dev/null)" = "true" ]
+}
+
+validate_token() {
+	local token="$1"
+	api_request GET /panel/api/inbounds/list "$token" "" || return 1
+	api_success "$API_RESPONSE" || {
+		LAST_ERROR="3x-ui не подтвердил API-токен"
+		return 1
+	}
+	return 0
+}
+
+valid_token_format() {
+	local length="${#1}"
+	[ "$length" -ge 16 ] && [ "$length" -le 256 ] || return 1
+	printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._~-]+$'
+}
+
+save_token_file() {
+	local token="$1" tmp="${TOKEN_FILE}.tmp.$$"
+	mkdir -p /etc/nanopi-control || return 1
+	umask 077
+	printf '%s\n' "$token" >"$tmp" || return 1
+	chmod 0600 "$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	mv -f "$tmp" "$TOKEN_FILE"
+}
+
+read_token_file() {
+	[ -s "$TOKEN_FILE" ] || return 1
+	IFS= read -r token <"$TOKEN_FILE"
+	valid_token_format "$token" || return 1
+	printf '%s' "$token"
+}
+
+find_api_token() {
+	local raw="$1" wanted="$2" keys key name id scope
+	FOUND_ID=""
+	FOUND_SCOPE=""
+	json_load "$raw" >/dev/null 2>&1 || return 1
+	json_select obj >/dev/null 2>&1 || return 1
+	json_get_keys keys
+	for key in $keys; do
+		json_select "$key" >/dev/null 2>&1 || continue
+		json_get_var name name
+		json_get_var id id
+		json_get_var scope scope
+		json_select ..
+		if [ "$name" = "$wanted" ]; then
+			FOUND_ID="$id"
+			FOUND_SCOPE="${scope:-admin}"
+			json_select ..
+			return 0
+		fi
+	done
+	json_select ..
+	return 1
+}
+
+delete_api_token_by_name() {
+	local bearer="$1" name="$2" body
+	api_request GET /panel/api/setting/apiTokens "$bearer" "" || return 1
+	find_api_token "$API_RESPONSE" "$name" || return 0
+	body="{\"expectedScope\":\"${FOUND_SCOPE:-admin}\"}"
+	api_request POST "/panel/api/setting/apiTokens/delete/$FOUND_ID" "$bearer" "$body" || return 1
+	api_success "$API_RESPONSE"
+}
+
+issue_named_token() {
+	local bootstrap_output bootstrap bootstrap_name create_body token
+	ISSUED_TOKEN=""
+	container_running || {
+		LAST_ERROR="Контейнер 3x-ui не запущен"
+		return 1
+	}
+	bootstrap_output="$(docker exec "$CONTAINER" /app/x-ui setting -getApiToken true 2>&1)" || {
+		LAST_ERROR="Не удалось выпустить служебный API-токен внутри контейнера"
+		return 1
+	}
+	bootstrap="$(printf '%s\n' "$bootstrap_output" | awk -F':[[:space:]]*' 'tolower($1) == "apitoken" && length($2) > 0 { value=$2 } END { print value }')"
+	valid_token_format "$bootstrap" || {
+		LAST_ERROR="3x-ui не вернул пригодный API-токен"
+		return 1
+	}
+	bootstrap_name="install"
+	printf '%s\n' "$bootstrap_output" | grep -q 'CLI fallback token' && bootstrap_name="cli-fallback"
+	validate_token "$bootstrap" || return 1
+
+	delete_api_token_by_name "$bootstrap" "$TOKEN_NAME" || {
+		LAST_ERROR="Не удалось заменить прежний токен $TOKEN_NAME"
+		return 1
+	}
+	create_body="{\"name\":\"$TOKEN_NAME\",\"scope\":\"admin\",\"expiresAt\":0}"
+	api_request POST /panel/api/setting/apiTokens/create "$bootstrap" "$create_body" || return 1
+	api_success "$API_RESPONSE" || {
+		LAST_ERROR="3x-ui отказался создать токен $TOKEN_NAME"
+		return 1
+	}
+	token="$(jsonfilter -s "$API_RESPONSE" -e '@.obj.token' 2>/dev/null)"
+	valid_token_format "$token" || {
+		LAST_ERROR="3x-ui создал токен без доступного значения"
+		return 1
+	}
+	validate_token "$token" || return 1
+	save_token_file "$token" || {
+		LAST_ERROR="Не удалось сохранить API-токен на OpenWrt"
+		return 1
+	}
+	delete_api_token_by_name "$token" "$bootstrap_name" >/dev/null 2>&1 || true
+	ISSUED_TOKEN="$token"
+	return 0
+}
+
+ensure_working_token() {
+	local token
+	WORKING_TOKEN=""
+	token="$(read_token_file 2>/dev/null)"
+	if [ -n "$token" ]; then
+		if validate_token "$token"; then
+			WORKING_TOKEN="$token"
+			return 0
+		fi
+		if [ "$API_AUTH_FAILED" -ne 1 ]; then
+			return 1
+		fi
+	fi
+	issue_named_token || return 1
+	WORKING_TOKEN="$ISSUED_TOKEN"
+	return 0
+}
+
+issue_token_command() {
+	take_lock
+	issue_named_token || {
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	}
+	json_result 1 "Токен $TOKEN_NAME выпущен, проверен и сохранён" "" ""
+}
+
+normalize_list() {
+	local raw="$1" family="$2" output="$3" validation="/tmp/nanopi-control/xui-validate.$$" elements line
+	printf '%s\n' "$raw" | tr -d '\r' | awk '
+		{ gsub(/^[[:space:]]+|[[:space:]]+$/, "") }
+		$0 == "" || substr($0, 1, 1) == "#" { next }
+		!seen[$0]++ { print }
+	' >"$output"
+	while IFS= read -r line; do
+		case "$line" in
+			*/*) ;;
+			*) LAST_ERROR="Сеть должна быть указана в формате CIDR: $line"; return 1 ;;
+		esac
+	done <"$output"
+	elements="$(awk 'BEGIN { first=1 } { if (!first) printf ", "; printf "%s", $0; first=0 } END { print "" }' "$output")"
+	{
+		echo "table inet xui_validate {"
+		if [ "$family" = "4" ]; then
+			echo " set values { type ipv4_addr; flags interval;"
+		else
+			echo " set values { type ipv6_addr; flags interval;"
+		fi
+		[ -n "$elements" ] && echo "  elements = { $elements }"
+		echo " }"
+		echo "}"
+	} >"$validation"
+	if ! nft -c -f "$validation" 2>"${validation}.err"; then
+		LAST_ERROR="Некорректная IPv${family}-сеть: $(tail -n 1 "${validation}.err")"
+		rm -f "$validation" "${validation}.err"
+		return 1
+	fi
+	rm -f "$validation" "${validation}.err"
+	return 0
+}
+
+uci_lists_to_files() {
+	local output4="$1" output6="$2"
+	uci -q get nanopi-control.xui.exclude4 2>/dev/null | tr ' ' '\n' | sed '/^$/d' >"$output4"
+	uci -q get nanopi-control.xui.exclude6 2>/dev/null | tr ' ' '\n' | sed '/^$/d' >"$output6"
+}
+
+collect_auto4() {
+	{
+		echo 0.0.0.0/8
+		echo 127.0.0.0/8
+		echo 169.254.0.0/16
+		echo 224.0.0.0/4
+		echo 240.0.0.0/4
+		echo 255.255.255.255/32
+		ip -4 route show 2>/dev/null | awk -v tun="$TUN_NAME" '
+			$1 ~ /^[0-9]+\./ && $1 ~ /\// && $0 !~ ("dev " tun "([[:space:]]|$)") { print $1 }
+		'
+	} | sort -u
+}
+
+collect_auto6() {
+	{
+		echo ::/128
+		echo ::1/128
+		echo fe80::/10
+		echo ff00::/8
+		ip -6 route show 2>/dev/null | awk -v tun="$TUN_NAME" '
+			$1 ~ /:/ && $1 ~ /\// && $0 !~ ("dev " tun "([[:space:]]|$)") { print $1 }
+		'
+	} | sort -u
+}
+
+settings_status() {
+	local exclude4 exclude6 block token_configured=0 routing_active=0 item
+	local auto4="/tmp/nanopi-control/xui-status-auto4.$$" auto6="/tmp/nanopi-control/xui-status-auto6.$$"
+	exclude4="$(uci -q get nanopi-control.xui.exclude4 2>/dev/null | tr ' ' '\n')"
+	exclude6="$(uci -q get nanopi-control.xui.exclude6 2>/dev/null | tr ' ' '\n')"
+	block="$(uci -q get nanopi-control.xui.block_ipv6 2>/dev/null)"
+	[ "$block" = "1" ] || block=0
+	[ -s "$TOKEN_FILE" ] && token_configured=1
+	routing_is_active && routing_active=1
+	mkdir -p /tmp/nanopi-control
+	collect_auto4 >"$auto4"
+	collect_auto6 >"$auto6"
+
+	json_init
+	json_add_boolean token_configured "$token_configured"
+	json_add_string token_name "$TOKEN_NAME"
+	json_add_string exclude4 "$exclude4"
+	json_add_string exclude6 "$exclude6"
+	json_add_boolean block_ipv6 "$block"
+	json_add_boolean routing_active "$routing_active"
+	json_add_array automatic_exclude4
+	while IFS= read -r item; do json_add_string "" "$item"; done <"$auto4"
+	json_close_array
+	json_add_array automatic_exclude6
+	while IFS= read -r item; do json_add_string "" "$item"; done <"$auto6"
+	json_close_array
+	json_dump
+	rm -f "$auto4" "$auto6"
+}
+
+stage_uci_settings() {
+	local file4="$1" file6="$2" block="$3" item
+	uci -q get nanopi-control.xui >/dev/null 2>&1 || uci set nanopi-control.xui=xui
+	uci -q delete nanopi-control.xui.exclude4
+	uci -q delete nanopi-control.xui.exclude6
+	while IFS= read -r item; do [ -n "$item" ] && uci add_list nanopi-control.xui.exclude4="$item"; done <"$file4"
+	while IFS= read -r item; do [ -n "$item" ] && uci add_list nanopi-control.xui.exclude6="$item"; done <"$file6"
+	uci set nanopi-control.xui.block_ipv6="$block"
+}
+
+save_settings() {
+	local supplied_token="$1" raw4="$2" raw6="$3" block="$4"
+	local file4="/tmp/nanopi-control/xui-save4.$$" file6="/tmp/nanopi-control/xui-save6.$$"
+
+	take_lock
+	case "$block" in 1|true) block=1 ;; *) block=0 ;; esac
+	normalize_list "$raw4" 4 "$file4" || {
+		rm -f "$file4" "$file6"
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	}
+	normalize_list "$raw6" 6 "$file6" || {
+		rm -f "$file4" "$file6"
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	}
+	if [ -n "$supplied_token" ]; then
+		valid_token_format "$supplied_token" || {
+			rm -f "$file4" "$file6"
+			json_result 0 "" "Некорректный формат API-токена" ""
+			exit 1
+		}
+		validate_token "$supplied_token" || {
+			rm -f "$file4" "$file6"
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+	fi
+
+	stage_uci_settings "$file4" "$file6" "$block"
+	if routing_is_active && ! apply_routing_rules; then
+		uci revert nanopi-control
+		rm -f "$file4" "$file6"
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	fi
+	uci commit nanopi-control || {
+		uci revert nanopi-control
+		rm -f "$file4" "$file6"
+		json_result 0 "" "Не удалось сохранить настройки UCI" ""
+		exit 1
+	}
+	if [ -n "$supplied_token" ] && ! save_token_file "$supplied_token"; then
+		rm -f "$file4" "$file6"
+		json_result 0 "" "Настройки сетей сохранены, но токен записать не удалось" ""
+		exit 1
+	fi
+	rm -f "$file4" "$file6"
+	if routing_is_active; then
+		json_result 1 "Настройки 3x-ui сохранены и применены" "" ""
+	else
+		json_result 1 "Настройки 3x-ui сохранены" "" ""
+	fi
+}
+
+build_tun_payload() {
+	local wan="$1" id="$2"
+	json_init
+	[ -n "$id" ] && json_add_int id "$id"
+	json_add_int up 0
+	json_add_int down 0
+	json_add_int total 0
+	json_add_string remark "$TUN_REMARK"
+	json_add_boolean enable 1
+	json_add_int expiryTime 0
+	json_add_string listen ""
+	json_add_int port 0
+	json_add_string protocol tun
+	json_add_string tag "$TUN_TAG"
+	json_add_object settings
+	json_add_string name "$TUN_NAME"
+	json_add_int mtu 1500
+	json_add_array gateway
+	json_add_string "" "$TUN4_ADDRESS"
+	json_add_string "" "$TUN6_ADDRESS"
+	json_close_array
+	json_add_array dns
+	json_close_array
+	json_add_int userLevel 0
+	json_add_array autoSystemRoutingTable
+	json_close_array
+	json_add_string autoOutboundsInterface "$wan"
+	json_close_object
+	json_add_object streamSettings
+	json_close_object
+	json_add_object sniffing
+	json_add_boolean enabled 1
+	json_add_array destOverride
+	json_add_string "" http
+	json_add_string "" tls
+	json_add_string "" quic
+	json_close_array
+	json_add_boolean metadataOnly 0
+	json_add_boolean routeOnly 1
+	json_add_array ipsExcluded
+	json_close_array
+	json_add_array domainsExcluded
+	json_close_array
+	json_close_object
+	json_add_string shareAddrStrategy node
+	json_add_string shareAddr ""
+	json_dump
+}
+
+find_tun_inbound() {
+	local raw="$1" keys key protocol tag id settings_type settings_raw name
+	FOUND_ID=""
+	FOUND_CONFLICT=""
+	json_load "$raw" >/dev/null 2>&1 || return 1
+	json_select obj >/dev/null 2>&1 || return 1
+	json_get_keys keys
+	for key in $keys; do
+		json_select "$key" >/dev/null 2>&1 || continue
+		json_get_var protocol protocol
+		json_get_var tag tag
+		json_get_var id id
+		name=""
+		json_get_type settings_type settings
+		if [ "$settings_type" = "object" ]; then
+			json_select settings
+			json_get_var name name
+			json_select ..
+		elif [ "$settings_type" = "string" ]; then
+			json_get_var settings_raw settings
+			name="$(jsonfilter -s "$settings_raw" -e '@.name' 2>/dev/null)"
+		fi
+		json_select ..
+		if [ "$protocol" = "tun" ] && [ "$name" = "$TUN_NAME" ]; then
+			if [ "$tag" = "$TUN_TAG" ]; then
+				FOUND_ID="$id"
+			else
+				FOUND_CONFLICT="$tag"
+			fi
+			json_select ..
+			return 0
+		fi
+	done
+	json_select ..
+	return 0
+}
+
+configured_wan_device() {
+	local status wan
+	status="$(ubus call network.interface.wan status 2>/dev/null)" || return 1
+	wan="$(jsonfilter -s "$status" -e '@.l3_device' 2>/dev/null)"
+	case "$wan" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+	printf '%s' "$wan"
+}
+
+ensure_managed_tun() {
+	local token="$1" wan payload endpoint
+	wan="$(configured_wan_device)" || {
+		LAST_ERROR="Не удалось определить активный WAN-интерфейс"
+		return 1
+	}
+	api_request GET /panel/api/inbounds/list "$token" "" || return 1
+	api_success "$API_RESPONSE" || {
+		LAST_ERROR="Не удалось получить список входящих соединений 3x-ui"
+		return 1
+	}
+	find_tun_inbound "$API_RESPONSE" || {
+		LAST_ERROR="3x-ui вернул некорректный список входящих соединений"
+		return 1
+	}
+	if [ -n "$FOUND_CONFLICT" ]; then
+		LAST_ERROR="Интерфейс $TUN_NAME уже принадлежит другому входящему соединению 3x-ui (${FOUND_CONFLICT:-без тега})"
+		return 1
+	fi
+	if [ -z "$FOUND_ID" ] && ip link show dev "$TUN_NAME" >/dev/null 2>&1; then
+		LAST_ERROR="Интерфейс $TUN_NAME уже существует и не принадлежит NanoPi Control"
+		return 1
+	fi
+	payload="$(build_tun_payload "$wan" "$FOUND_ID")"
+	if [ -n "$FOUND_ID" ]; then
+		endpoint="/panel/api/inbounds/update/$FOUND_ID"
+	else
+		endpoint="/panel/api/inbounds/add"
+	fi
+	api_request POST "$endpoint" "$token" "$payload" || return 1
+	api_success "$API_RESPONSE" || {
+		LAST_ERROR="3x-ui отказался создать или обновить управляемый TUN: $(jsonfilter -s "$API_RESPONSE" -e '@.msg' 2>/dev/null)"
+		return 1
+	}
+	return 0
+}
+
+wait_for_tun() {
+	local attempts="${1:-20}"
+	while [ "$attempts" -gt 0 ]; do
+		if ip link show dev "$TUN_NAME" >/dev/null 2>&1 \
+			&& ip -4 addr show dev "$TUN_NAME" 2>/dev/null | grep -q '172\.19\.0\.1/30' \
+			&& ip -6 addr show dev "$TUN_NAME" 2>/dev/null | grep -qi 'fd7a:7875:6900::1/126'; then
+			return 0
+		fi
+		attempts=$((attempts - 1))
+		sleep 1
+	done
+	LAST_ERROR="3x-ui сохранил TUN, но dual-stack интерфейс $TUN_NAME не появился"
+	return 1
+}
+
+routing_is_active() {
+	nft list table "$NFT_FAMILY" "$NFT_TABLE" >/dev/null 2>&1
+}
+
+delete_rule_priority() {
+	local family="$1" priority="$2"
+	while ip "$family" rule del pref "$priority" >/dev/null 2>&1; do :; done
+}
+
+remove_firewall_forwarding() {
+	[ -e "$FW4_INCLUDE" ] || return 0
+	rm -f "$FW4_INCLUDE" || return 1
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+ensure_firewall_forwarding() {
+	local lan="$1" temporary="/tmp/nanopi-control/xui-fw4.$$"
+	mkdir -p "$FW4_INCLUDE_DIR" || return 1
+	{
+		echo "iifname \"$lan\" oifname \"$TUN_NAME\" counter accept comment \"nanopi-control: LAN to 3x-ui TUN\""
+		echo "iifname \"$TUN_NAME\" oifname \"$lan\" counter accept comment \"nanopi-control: 3x-ui TUN to LAN\""
+	} >"$temporary" || return 1
+	chmod 0644 "$temporary" || {
+		rm -f "$temporary"
+		return 1
+	}
+	mv "$temporary" "$FW4_INCLUDE" || {
+		rm -f "$temporary"
+		return 1
+	}
+	if ! /etc/init.d/firewall reload >/dev/null 2>&1; then
+		rm -f "$FW4_INCLUDE"
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+		return 1
+	fi
+	nft list chain inet fw4 forward 2>/dev/null \
+		| grep -qF 'nanopi-control: LAN to 3x-ui TUN'
+}
+
+disable_routing() {
+	nft delete table "$NFT_FAMILY" "$NFT_TABLE" >/dev/null 2>&1 || true
+	delete_rule_priority -4 "$RULE4_PRIORITY"
+	delete_rule_priority -6 "$RULE6_PRIORITY"
+	ip -4 route flush table "$TABLE4" >/dev/null 2>&1 || true
+	ip -6 route flush table "$TABLE6" >/dev/null 2>&1 || true
+	remove_firewall_forwarding || true
+}
+
+ensure_policy_routes() {
+	local block="$1"
+	delete_rule_priority -4 "$RULE4_PRIORITY"
+	ip -4 route replace unreachable default table "$TABLE4" metric 42760 || return 1
+	if ip link show dev "$TUN_NAME" >/dev/null 2>&1; then
+		ip -4 route replace default dev "$TUN_NAME" table "$TABLE4" metric 10 || return 1
+	fi
+	ip -4 rule add pref "$RULE4_PRIORITY" fwmark "$MARK_VALUE/$MARK_MASK" lookup "$TABLE4" || return 1
+
+	delete_rule_priority -6 "$RULE6_PRIORITY"
+	if [ "$block" = "1" ]; then
+		ip -6 route flush table "$TABLE6" >/dev/null 2>&1 || true
+		return 0
+	fi
+	ip -6 route replace unreachable default table "$TABLE6" metric 42760 || return 1
+	if ip link show dev "$TUN_NAME" >/dev/null 2>&1; then
+		ip -6 route replace default dev "$TUN_NAME" table "$TABLE6" metric 10 || return 1
+	fi
+	ip -6 rule add pref "$RULE6_PRIORITY" fwmark "$MARK_VALUE/$MARK_MASK" lookup "$TABLE6" || return 1
+}
+
+render_nft_rules() {
+	local lan="$1" block="$2" combined4="$3" combined6="$4" output="$5" cidr
+	{
+		if routing_is_active; then
+			echo "delete table $NFT_FAMILY $NFT_TABLE"
+		fi
+		echo "table $NFT_FAMILY $NFT_TABLE {"
+		echo " chain prerouting {"
+		echo "  type filter hook prerouting priority -150; policy accept;"
+		while IFS= read -r cidr; do
+			[ -n "$cidr" ] && echo "  iifname \"$lan\" ip daddr $cidr return"
+		done <"$combined4"
+		echo "  iifname \"$lan\" meta nfproto ipv4 meta mark set meta mark | $MARK_VALUE"
+		if [ "$block" != "1" ]; then
+			while IFS= read -r cidr; do
+				[ -n "$cidr" ] && echo "  iifname \"$lan\" ip6 daddr $cidr return"
+			done <"$combined6"
+			echo "  iifname \"$lan\" meta nfproto ipv6 meta mark set meta mark | $MARK_VALUE"
+		fi
+		echo " }"
+		if [ "$block" = "1" ]; then
+			echo " chain forward {"
+			echo "  type filter hook forward priority -5; policy accept;"
+			while IFS= read -r cidr; do
+				[ -n "$cidr" ] && echo "  iifname \"$lan\" ip6 daddr $cidr return"
+			done <"$combined6"
+			echo "  iifname \"$lan\" meta nfproto ipv6 reject with icmpv6 type admin-prohibited"
+			echo " }"
+		fi
+		echo "}"
+	} >"$output"
+}
+
+apply_routing_rules() {
+	local lan_status lan block manual4="/tmp/nanopi-control/xui-manual4.$$" manual6="/tmp/nanopi-control/xui-manual6.$$"
+	local combined4="/tmp/nanopi-control/xui-combined4.$$" combined6="/tmp/nanopi-control/xui-combined6.$$" rules="/tmp/nanopi-control/xui-rules.$$"
+
+	lan_status="$(ubus call network.interface.lan status 2>/dev/null)" || {
+		LAST_ERROR="Не удалось прочитать состояние LAN"
+		return 1
+	}
+	lan="$(jsonfilter -s "$lan_status" -e '@.l3_device' 2>/dev/null)"
+	case "$lan" in ''|*[!A-Za-z0-9_.:-]*) LAST_ERROR="Не удалось определить LAN-интерфейс"; return 1 ;; esac
+	block="$(uci -q get nanopi-control.xui.block_ipv6 2>/dev/null)"
+	[ "$block" = "1" ] || block=0
+	uci_lists_to_files "$manual4" "$manual6"
+	{ collect_auto4; cat "$manual4"; } | sed '/^$/d' | sort -u >"$combined4"
+	{ collect_auto6; cat "$manual6"; } | sed '/^$/d' | sort -u >"$combined6"
+	render_nft_rules "$lan" "$block" "$combined4" "$combined6" "$rules"
+	if ! ensure_policy_routes "$block"; then
+		LAST_ERROR="Не удалось подготовить таблицы policy routing"
+		rm -f "$manual4" "$manual6" "$combined4" "$combined6" "$rules" "${rules}.err"
+		return 1
+	fi
+	if ! nft -f "$rules" 2>"${rules}.err"; then
+		LAST_ERROR="Не удалось применить правила nftables: $(tail -n 1 "${rules}.err")"
+		disable_routing
+		rm -f "$manual4" "$manual6" "$combined4" "$combined6" "$rules" "${rules}.err"
+		return 1
+	fi
+	if ! ensure_firewall_forwarding "$lan"; then
+		LAST_ERROR="Не удалось разрешить пересылку трафика между LAN и $TUN_NAME в fw4"
+		disable_routing
+		rm -f "$manual4" "$manual6" "$combined4" "$combined6" "$rules" "${rules}.err"
+		return 1
+	fi
+	rm -f "$manual4" "$manual6" "$combined4" "$combined6" "$rules" "${rules}.err"
+	return 0
+}
+
+set_routing() {
+	local enabled="$1" token
+	take_lock
+	case "$enabled" in 1|true)
+		container_running || {
+			json_result 0 "" "Маршрутизацию нельзя включить: контейнер 3x-ui не запущен" ""
+			exit 1
+		}
+		tun_runtime_ready || {
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+		ensure_working_token || {
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+		token="$WORKING_TOKEN"
+		ensure_managed_tun "$token" || {
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+		wait_for_tun 20 || {
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+		apply_routing_rules || {
+			json_result 0 "" "$LAST_ERROR" ""
+			exit 1
+		}
+		json_result 1 "Маршрутизация LAN через 3x-ui включена" "" ""
+		;;
+	*)
+		disable_routing
+		json_result 1 "Маршрутизация LAN через 3x-ui выключена" "" ""
+		;;
+	esac
+}
+
+purge_settings() {
+	take_lock
+	disable_routing
+	rm -f "$TOKEN_FILE" "${TOKEN_FILE}.tmp."*
+	uci -q delete nanopi-control.xui
+	uci commit nanopi-control >/dev/null 2>&1 || true
+	json_result 1 "Настройки и правила 3x-ui удалены" "" ""
 }
 
 case "$1" in
 	status) status ;;
+	settings) settings_status ;;
+	save) save_settings "$2" "$3" "$4" "$5" ;;
+	issue-token) issue_token_command ;;
+	routing) set_routing "$2" ;;
+	purge) purge_settings ;;
 	action) action "$2" ;;
 	*)
-		printf '%s\n' '{ "error": "Неизвестная команда управления 3x-ui" }'
+		json_result 0 "" "Неизвестная команда управления 3x-ui" ""
 		exit 1
 		;;
 esac

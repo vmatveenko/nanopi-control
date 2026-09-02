@@ -2,7 +2,7 @@
 
 case "$1" in
 	list)
-		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "xui_status": {}, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
+		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "xui_status": {}, "xui_settings": {}, "xui_settings_save": { "token": "", "exclude4": "", "exclude6": "", "block_ipv6": false }, "xui_token_issue": {}, "xui_routing_set": { "enabled": false }, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
 		;;
 	call)
 		payload="$(cat)"
@@ -58,6 +58,23 @@ case "$1" in
 				;;
 			xui_status)
 				exec /usr/libexec/nanopi-control/3xui-control status
+				;;
+			xui_settings)
+				exec /usr/libexec/nanopi-control/3xui-control settings
+				;;
+			xui_settings_save)
+				token="$(jsonfilter -s "$payload" -e '@.token' 2>/dev/null)"
+				exclude4="$(jsonfilter -s "$payload" -e '@.exclude4' 2>/dev/null)"
+				exclude6="$(jsonfilter -s "$payload" -e '@.exclude6' 2>/dev/null)"
+				block_ipv6="$(jsonfilter -s "$payload" -e '@.block_ipv6' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/3xui-control save "$token" "$exclude4" "$exclude6" "$block_ipv6"
+				;;
+			xui_token_issue)
+				exec /usr/libexec/nanopi-control/3xui-control issue-token
+				;;
+			xui_routing_set)
+				enabled="$(jsonfilter -s "$payload" -e '@.enabled' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/3xui-control routing "$enabled"
 				;;
 			xui_action)
 				action="$(jsonfilter -s "$payload" -e '@.action' 2>/dev/null)"
