@@ -109,7 +109,7 @@ return view.extend({
 		];
 
 		return E('div', {}, [
-			E('h2', { 'class': 'section-title' }, 'Caddy — Обзор'),
+			E('h2', { 'class': 'section-title' }, 'Caddy - Обзор'),
 			E('p', {}, 'Здесь отображается текущее состояние контейнера Caddy.'),
 			E('div', { 'style': 'display:flex;gap:6px;margin:12px 0 16px' }, [ firstButton, stopButton ]),
 			informationTable(rows),

@@ -1,5 +1,5 @@
 'use strict';
-// NanoPi Control system overview.
+// WrtPilot system overview.
 'require view';
 'require rpc';
 'require ui';
@@ -262,7 +262,7 @@ return view.extend({
 					const dependents = (module.dependents || []).join(', ');
 					ui.showModal(isDocker ? 'Удаление Docker и всех модулей' : 'Удаление ' + moduleName, [
 						E('p', {}, isDocker
-							? 'Docker будет удалён вместе со всеми модулями NanoPi Control' + (dependents ? ': ' + dependents + '.' : '.')
+							? 'Docker будет удалён вместе со всеми модулями WrtPilot' + (dependents ? ': ' + dependents + '.' : '.')
 							: isXui
 								? 'Контейнер, образ, база данных, сертификаты и все настройки 3x-ui будут полностью удалены.'
 								: isVaultwarden
@@ -443,7 +443,7 @@ return view.extend({
 		const release = board.release || {};
 
 		const root = E('div', { 'class': 'cbi-map' }, [
-			E('h2', {}, _('NanoPi Control - Overview')),
+			E('h2', {}, _('WrtPilot - Overview')),
 			E('div', { 'class': 'cbi-map-descr' },
 				_('Current information about the NanoPi, its boot source and internal storage.'))
 		]);
@@ -471,7 +471,7 @@ return view.extend({
 			[ _('Board'), board.board_name || status.board_name || '-', '' ],
 			[ _('OpenWrt version'), release.description || release.version || '-', '' ],
 			[ _('Kernel version'), board.kernel || '-', '' ],
-			[ _('NanoPi Control version'), status.module_version || '-', '' ],
+			[ _('WrtPilot version'), status.module_version || '-', '' ],
 			[ _('Boot source'), bootSource, '' ],
 			[ _('Internal storage'), internalPresent ? '%s · %s'.format(status.internal_device, formatBytes(status.internal_size)) : _('Not detected'), '' ],
 			[ _('System partition'), '%s · %s · %s занято из %s · %s свободно'.format(status.root_partition || '-', status.root_filesystem || '-', formatBytes(rootUsedBytes), formatBytes(rootBytes), formatBytes(freeBytes)), sdExpansionHint ],
@@ -496,7 +496,7 @@ return view.extend({
 		if (modules.job && modules.job.running)
 			window.setTimeout(this.pollModules.bind(this, modulesContainer), 0);
 
-		root.appendChild(E('h3', { 'style': 'margin-top:20px' }, _('NanoPi Control updates')));
+		root.appendChild(E('h3', { 'style': 'margin-top:20px' }, _('WrtPilot updates')));
 		const updateContainer = E('div');
 		updateContainer.appendChild(this.renderUpdate(update, updateContainer));
 		root.appendChild(updateContainer);

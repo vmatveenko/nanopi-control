@@ -77,17 +77,17 @@ repo="$(repository)"
 base="https://github.com/$repo/releases/download/$TAG"
 expected_version="${TAG#v}"
 
-log "Starting NanoPi Control update to $TAG from $repo"
+log "Starting WrtPilot update to $TAG from $repo"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" || fail "Не удалось подготовить временный каталог"
 write_state downloading 1 "$TAG" 10 "Загрузка контрольных сумм" ""
 
-uclient-fetch -q -T 30 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/SHA256SUMS" "$base/SHA256SUMS" || fail "Не удалось загрузить SHA256SUMS"
-write_state downloading 1 "$TAG" 25 "Загрузка пакета NanoPi Control" ""
-uclient-fetch -q -T 60 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/luci-app-nanopi-control.apk" "$base/luci-app-nanopi-control.apk" || fail "Не удалось загрузить пакет NanoPi Control"
+uclient-fetch -q -T 30 -U "WrtPilot/$(current_version)" -O "$WORK_DIR/SHA256SUMS" "$base/SHA256SUMS" || fail "Не удалось загрузить SHA256SUMS"
+write_state downloading 1 "$TAG" 25 "Загрузка пакета WrtPilot" ""
+uclient-fetch -q -T 60 -U "WrtPilot/$(current_version)" -O "$WORK_DIR/luci-app-nanopi-control.apk" "$base/luci-app-nanopi-control.apk" || fail "Не удалось загрузить пакет WrtPilot"
 
 write_state downloading 1 "$TAG" 40 "Загрузка русского перевода" ""
-if uclient-fetch -q -T 60 -U "NanoPi-Control/$(current_version)" -O "$WORK_DIR/luci-i18n-nanopi-control-ru.apk" "$base/luci-i18n-nanopi-control-ru.apk"; then
+if uclient-fetch -q -T 60 -U "WrtPilot/$(current_version)" -O "$WORK_DIR/luci-i18n-nanopi-control-ru.apk" "$base/luci-i18n-nanopi-control-ru.apk"; then
 	has_translation=1
 else
 	has_translation=0
@@ -99,7 +99,7 @@ write_state verifying 1 "$TAG" 55 "Проверка контрольных су�
 (
 	cd "$WORK_DIR" || exit 1
 	grep '  luci-app-nanopi-control.apk$' SHA256SUMS | sha256sum -c -
-) || fail "Контрольная сумма пакета NanoPi Control не совпадает"
+) || fail "Контрольная сумма пакета WrtPilot не совпадает"
 
 if [ "$has_translation" -eq 1 ]; then
 	(
@@ -108,7 +108,7 @@ if [ "$has_translation" -eq 1 ]; then
 	) || fail "Контрольная сумма пакета перевода не совпадает"
 fi
 
-write_state installing 1 "$TAG" 70 "Установка пакетов NanoPi Control" ""
+write_state installing 1 "$TAG" 70 "Установка пакетов WrtPilot" ""
 if [ "$has_translation" -eq 1 ]; then
 	apk --allow-untrusted add "$WORK_DIR/luci-app-nanopi-control.apk" "$WORK_DIR/luci-i18n-nanopi-control-ru.apk" || fail "apk не смог установить обновление"
 else
@@ -123,8 +123,8 @@ write_state restarting 1 "$TAG" 90 "Обновление служб и кэше�
 /etc/init.d/nanopi-control restart >/dev/null 2>&1 || true
 rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
 rm -rf /tmp/luci-modulecache
-write_state complete 0 "$TAG" 100 "NanoPi Control успешно обновлён" ""
-log "NanoPi Control update to $TAG completed successfully"
+write_state complete 0 "$TAG" 100 "WrtPilot успешно обновлён" ""
+log "WrtPilot update to $TAG completed successfully"
 FINISHED=1
 sync
 

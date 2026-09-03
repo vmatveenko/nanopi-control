@@ -22,9 +22,20 @@ const callXuiSettingsSave = rpc.declare({
 	expect: {}
 });
 
+const callXuiPanelSave = rpc.declare({
+	object: 'nanopi-control', method: 'xui_panel_save',
+	params: [ 'token', 'port', 'path', 'wan' ], expect: {}
+});
+
 const callXuiTokenIssue = rpc.declare({
 	object: 'nanopi-control',
 	method: 'xui_token_issue',
+	expect: {}
+});
+
+const callXuiPasswordReset = rpc.declare({
+	object: 'nanopi-control',
+	method: 'xui_password_reset',
 	expect: {}
 });
 
@@ -62,11 +73,12 @@ function formatDate(value) {
 	return isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function panelUrl(port) {
+function panelUrl(port, path) {
+	if (!port) return '';
 	let host = window.location.hostname;
 	if (host.indexOf(':') >= 0 && host.charAt(0) !== '[')
 		host = '[' + host + ']';
-	return 'http://' + host + ':' + (port || 2053) + '/';
+	return 'http://' + host + ':' + port + (path || '/');
 }
 
 function twoColumnTable(title, rows) {
@@ -161,27 +173,64 @@ return view.extend({
 		};
 	},
 
+	routingSnapshot: function() {
+		return JSON.stringify([ this.exclude4Input.value, this.exclude6Input.value, !!this.blockIpv6Input.checked ]);
+	},
+
+	panelSnapshot: function() {
+		return JSON.stringify([ this.portInput.value, this.pathInput.value, !!this.wanInput.checked ]);
+	},
+
+	styleTokenButtons: function() {
+		const style = window.getComputedStyle(this.tokenInput);
+		[ this.issueButton, this.resetPasswordButton ].forEach(function(button) {
+			button.style.borderColor = style.borderTopColor;
+			button.style.color = style.color;
+		});
+		this.issueButton.style.color = style.borderTopColor;
+	},
+
+	updateSaveButtons: function() {
+		const tokenChanged = this.tokenInput.value.trim() !== '';
+		this.tokenSaveButton.disabled = (!tokenChanged && this.panelSnapshot() === this.savedPanel) || !!this.settingsBusy || !this.panelSettingsKnown;
+		this.routingSaveButton.disabled = !!this.settingsBusy || this.routingSnapshot() === this.savedRouting;
+		this.issueButton.disabled = this.resetPasswordButton.disabled = !this.containerRunning || !!this.settingsBusy;
+	},
+
+	tokenSaved: function(message) {
+		this.tokenInput.value = '';
+		this.tokenInput.placeholder = 'Сохранённый токен не отображается';
+		this.tokenStatus.textContent = message;
+		this.updateSaveButtons();
+	},
+
 	saveSettings: function(showModal, section) {
 		const view = this;
 		const values = view.settingsPayload();
+		view.settingsBusy = true;
+		view.updateSaveButtons();
 		if (section === 'routing')
 			values.token = '';
 		if (showModal !== false)
 			ui.showModal('Настройки 3x-ui', [ E('p', { 'class': 'spinning' }, view.routingActive ? 'Сохранение и применение…' : 'Сохранение…') ]);
-		const current = section === 'token' ? callXuiSettings() : Promise.resolve(null);
-		return current.then(function(saved) {
-			if (saved) {
-				values.exclude4 = saved.exclude4 || '';
-				values.exclude6 = saved.exclude6 || '';
-				values.block_ipv6 = !!saved.block_ipv6;
-			}
-			return callXuiSettingsSave(values.token, values.exclude4, values.exclude6, values.block_ipv6);
-		}).then(function(result) {
+		const operation = section === 'token'
+			? callXuiPanelSave(values.token.trim(), view.portInput.value, view.pathInput.value, !!view.wanInput.checked)
+			: callXuiSettingsSave(values.token, values.exclude4, values.exclude6, values.block_ipv6);
+		return operation.then(function(result) {
 			operationError(result, 'Не удалось сохранить настройки');
-			if (values.token) {
-				view.tokenInput.value = '';
-				view.tokenStatus.textContent = 'Токен настроен и проверен';
-				view.tokenInput.placeholder = 'Сохранённый токен не отображается';
+			if (values.token)
+				view.tokenSaved('Токен настроен и проверен');
+			if (section === 'routing')
+				view.savedRouting = JSON.stringify([ values.exclude4, values.exclude6, values.block_ipv6 ]);
+			if (section === 'token') {
+				view.portInput.value = result.panel_port;
+				view.pathInput.value = result.panel_path;
+				view.wanInput.checked = !!result.panel_wan;
+				view.savedPanel = view.panelSnapshot();
+				view.tokenSaved('Токен настроен и проверен');
+				const url = panelUrl(result.panel_port, result.panel_path);
+				view.panelLink.href = url;
+				view.panelLink.textContent = url;
 			}
 			if (showModal !== false) {
 				ui.hideModal();
@@ -194,22 +243,81 @@ return view.extend({
 				ui.addNotification(null, E('p', {}, error.message), 'error');
 			}
 			throw error;
+		}).finally(function() {
+			view.settingsBusy = false;
+			view.updateSaveButtons();
 		});
 	},
 
 	issueToken: function() {
 		const view = this;
+		view.settingsBusy = true;
+		view.updateSaveButtons();
 		ui.showModal('API-токен 3x-ui', [ E('p', { 'class': 'spinning' }, 'Выпуск токена openwrt-api-token…') ]);
 		return callXuiTokenIssue().then(function(result) {
 			operationError(result, 'Не удалось выпустить API-токен');
-			view.tokenInput.value = '';
-			view.tokenInput.placeholder = 'Сохранённый токен не отображается';
-			view.tokenStatus.textContent = 'Токен openwrt-api-token настроен и проверен';
+			view.tokenSaved('Токен openwrt-api-token настроен и проверен');
 			ui.hideModal();
 			view.notifyResult(result);
 		}).catch(function(error) {
 			ui.hideModal();
 			ui.addNotification(null, E('p', {}, error.message), 'error');
+		}).finally(function() {
+			view.settingsBusy = false;
+			view.updateSaveButtons();
+		});
+	},
+
+	resetPassword: function() {
+		const view = this;
+		view.settingsBusy = true;
+		view.updateSaveButtons();
+		ui.showModal('Сброс пароля 3x-ui', [ E('p', { 'class': 'spinning' }, 'Проверка API-токена и сброс пароля…') ]);
+		return callXuiPasswordReset().then(function(result) {
+			operationError(result, 'Не удалось сбросить пароль');
+			view.tokenSaved('Токен настроен и проверен');
+			const password = E('input', {
+				'class': 'cbi-input-text', 'type': 'text', 'readonly': true,
+				'aria-label': 'Новый пароль', 'autocomplete': 'off',
+				'style': 'width:100%;box-sizing:border-box;font-family:monospace'
+			});
+			password.value = result.password;
+			const copyStatus = E('span', { 'role': 'status', 'style': 'margin-right:8px' });
+			const copyButton = E('button', {
+				'class': 'btn cbi-button-action', 'type': 'button',
+				'click': ui.createHandlerFn(view, function() {
+					password.focus();
+					password.select();
+					const copy = window.isSecureContext && navigator.clipboard
+						? navigator.clipboard.writeText(password.value)
+						: Promise.resolve().then(function() {
+							if (!document.execCommand('copy')) throw new Error('copy');
+						});
+					return copy.then(function() { copyStatus.textContent = 'Скопировано'; })
+						.catch(function() { copyStatus.textContent = 'Нажмите Ctrl+C для копирования'; });
+				})
+			}, 'Копировать пароль');
+			ui.showModal('Новый пароль 3x-ui', [
+				E('p', {}, 'Пароль изменён. Логин: ' + result.username),
+				password,
+				E('p', {}, 'Скопируйте пароль перед закрытием этого окна.'),
+				result.warning ? E('p', { 'class': 'alert-message warning' }, result.warning) : '',
+				E('div', { 'class': 'right', 'style': 'margin-top:12px' }, [
+					copyStatus, copyButton, ' ', E('button', {
+						'class': 'btn', 'type': 'button', 'click': function() {
+							password.value = '';
+							ui.hideModal();
+						}
+					}, 'Закрыть')
+				])
+			]);
+			result.password = '';
+		}).catch(function(error) {
+			ui.hideModal();
+			ui.addNotification(null, E('p', {}, error.message), 'error');
+		}).finally(function() {
+			view.settingsBusy = false;
+			view.updateSaveButtons();
 		});
 	},
 
@@ -231,7 +339,6 @@ return view.extend({
 			view.routingButton.className = enabled ? 'btn cbi-button-negative' : 'btn cbi-button-action';
 			view.routingState.textContent = enabled ? 'Включена' : 'Выключена';
 			view.routingState.style.color = enabled ? '#16803a' : '#667085';
-			view.routingSaveButton.textContent = enabled ? 'Сохранить и применить' : 'Сохранить';
 			ui.hideModal();
 			view.notifyResult(result);
 		}).catch(function(error) {
@@ -248,27 +355,50 @@ return view.extend({
 			view.tabPanels[key].style.display = key === name ? '' : 'none';
 			view.tabItems[key].className = key === name ? 'cbi-tab' : 'cbi-tab-disabled';
 		});
+		if (name === 'settings') view.styleTokenButtons();
 	},
 
 	renderTabs: function(settings, informationPanel, running) {
 		const view = this;
 		view.containerRunning = running;
+		view.panelSettingsKnown = !!settings.panel_settings_known;
+		view.portInput = E('input', {
+			'class': 'cbi-input-text', 'type': 'number', 'min': 1, 'max': 65535,
+			'aria-label': 'Порт панели', 'style': 'width:140px'
+		});
+		view.portInput.value = settings.panel_settings_known ? settings.panel_port : '';
+		view.pathInput = E('input', {
+			'class': 'cbi-input-text', 'type': 'text', 'placeholder': '/',
+			'aria-label': 'URL-путь', 'style': 'width:100%;max-width:500px;box-sizing:border-box'
+		});
+		view.pathInput.value = settings.panel_settings_known ? settings.panel_path : '';
+		view.wanInput = E('input', { 'class': 'cbi-input-checkbox', 'type': 'checkbox' });
+		view.wanInput.checked = !!settings.panel_wan;
+		view.savedPanel = view.panelSnapshot();
+		[ view.portInput, view.pathInput, view.wanInput ].forEach(function(input) { input.disabled = !view.panelSettingsKnown; });
 		view.tokenInput = E('input', {
 			'class': 'cbi-input-text',
 			'type': 'password',
 			'autocomplete': 'new-password',
 			'placeholder': settings.token_configured ? 'Сохранённый токен не отображается' : 'Введите API-токен',
-			'style': 'min-width:260px;flex:1'
+			'style': 'min-width:200px;flex:1;height:32px;box-sizing:border-box;margin:0'
 		});
-		const issueButton = E('button', {
-			'class': 'btn cbi-button-action',
+		view.issueButton = E('button', {
+			'class': 'btn',
 			'type': 'button',
 			'title': 'Выпустить токен openwrt-api-token',
 			'aria-label': 'Выпустить API-токен',
-			'style': 'min-width:38px;padding:4px 9px'
-		}, '🔑');
-		issueButton.disabled = !running;
-		issueButton.addEventListener('click', ui.createHandlerFn(view, function() { return view.issueToken(); }));
+			'style': 'width:32px;min-width:32px;height:32px;box-sizing:border-box;margin:0;padding:0;line-height:1;background:transparent;box-shadow:none'
+		}, E('span', {
+			'aria-hidden': 'true',
+			'style': 'display:inline-block;width:16px;height:16px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Cpath fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 d=%22M14 9a5 5 0 1 0-4 5L3 21H1v-3l7-7M17 7h.01%22/%3E%3C/svg%3E") center/contain no-repeat'
+		}));
+		view.issueButton.addEventListener('click', ui.createHandlerFn(view, function() { return view.issueToken(); }));
+		view.resetPasswordButton = E('button', {
+			'class': 'btn', 'type': 'button',
+			'style': 'height:32px;box-sizing:border-box;margin:0;padding:0 10px;white-space:nowrap;background:transparent;box-shadow:none'
+		}, 'Сбросить пароль');
+		view.resetPasswordButton.addEventListener('click', ui.createHandlerFn(view, function() { return view.resetPassword(); }));
 		view.tokenStatus = E('div', { 'style': 'font-size:90%;color:#667085;margin-top:5px' },
 			settings.token_configured ? 'Токен настроен; сохранённое значение скрыто' : 'Токен ещё не настроен');
 		view.exclude4Input = E('textarea', {
@@ -288,25 +418,36 @@ return view.extend({
 			'type': 'checkbox'
 		});
 		view.blockIpv6Input.checked = !!settings.block_ipv6;
-		const tokenSaveButton = E('button', {
+		view.tokenSaveButton = E('button', {
 			'class': 'btn cbi-button-positive',
 			'type': 'button'
 		}, 'Сохранить');
-		tokenSaveButton.addEventListener('click', ui.createHandlerFn(view, function() {
+		view.tokenSaveButton.addEventListener('click', ui.createHandlerFn(view, function() {
 			return view.saveSettings(true, 'token').catch(function() {});
 		}));
 		view.routingSaveButton = E('button', {
 			'class': 'btn cbi-button-positive',
 			'type': 'button'
-		}, settings.routing_active ? 'Сохранить и применить' : 'Сохранить');
+		}, 'Сохранить');
 		view.routingSaveButton.addEventListener('click', ui.createHandlerFn(view, function() {
 			return view.saveSettings(true, 'routing').catch(function() {});
 		}));
+		view.savedRouting = view.routingSnapshot();
+		[ view.tokenInput, view.portInput, view.pathInput, view.wanInput, view.exclude4Input, view.exclude6Input, view.blockIpv6Input ].forEach(function(input) {
+			input.addEventListener('input', function() { view.updateSaveButtons(); });
+			input.addEventListener('change', function() { view.updateSaveButtons(); });
+		});
+		view.updateSaveButtons();
 
 		const tokenRows = [
 			[ 'API-токен', E('div', {}, [
-				E('div', { 'style': 'display:flex;gap:6px;align-items:center;max-width:620px' }, [ view.tokenInput, issueButton ]),
+				E('div', { 'style': 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;max-width:760px' }, [ view.tokenInput, view.issueButton, view.resetPasswordButton ]),
 				view.tokenStatus
+			]) ],
+			[ 'Порт панели', view.portInput ],
+			[ 'URL-путь', view.pathInput ],
+			[ 'Доступ из интернета', E('label', { 'style': 'display:flex;gap:8px;align-items:center' }, [
+				view.wanInput, E('span', {}, 'Разрешить доступ к порту панели со стороны WAN')
 			]) ]
 		];
 		const routingRows = [
@@ -325,13 +466,14 @@ return view.extend({
 			]) ]
 		];
 		const settingsPanel = E('div', {}, [
+			!view.panelSettingsKnown ? E('p', { 'class': 'alert-message warning' }, 'Запустите контейнер, чтобы прочитать и изменить настройки панели.') : '',
 			twoColumnTable('Параметр', tokenRows),
-			E('div', { 'style': 'margin-top:12px' }, [ tokenSaveButton ])
+			E('div', { 'class': 'right', 'style': 'margin-top:12px;text-align:right' }, [ view.tokenSaveButton ])
 		]);
 		const routingPanel = E('div', {}, [
 			E('p', {}, 'Пользовательские исключения сохраняются в OpenWrt. Автоматические сети вычисляются при каждом применении.'),
 			twoColumnTable('Параметр', routingRows),
-			E('div', { 'style': 'margin-top:12px' }, [ view.routingSaveButton ])
+			E('div', { 'class': 'right', 'style': 'margin-top:12px;text-align:right' }, [ view.routingSaveButton ])
 		]);
 		view.tabPanels = {
 			information: informationPanel,
@@ -369,7 +511,8 @@ return view.extend({
 		const settings = data[1] || {};
 		const installed = !!state.installed;
 		const running = !!state.running;
-		const url = panelUrl(state.panel_port);
+		const url = panelUrl(state.panel_settings_known ? state.panel_port : '', state.panel_path);
+		view.panelLink = E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer' }, url);
 		const firstButton = E('button', {
 			'class': 'btn cbi-button-action neutral'
 		}, running ? 'Перезапустить' : 'Запустить');
@@ -408,7 +551,7 @@ return view.extend({
 			[ 'Сетевой режим', state.network_mode || '—' ],
 			[ 'Fail2ban', state.fail2ban === 'true' ? 'Включён' : 'Отключён' ],
 			[ 'Каталог данных', state.data_path || '/opt/3x-ui' ],
-			[ 'Панель', installed ? E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer' }, url) : '—' ]
+			[ 'Панель', installed && url ? view.panelLink : 'Недоступна, пока адрес панели не определён' ]
 		];
 		const informationContent = [ twoColumnTable('Информация', rows) ];
 		if (state.routing_degraded) {
@@ -417,7 +560,7 @@ return view.extend({
 		}
 		const informationPanel = E('div', {}, informationContent);
 		const content = [
-			E('h2', { 'class': 'section-title' }, '3x-ui — Обзор'),
+			E('h2', { 'class': 'section-title' }, '3x-ui - Обзор'),
 			E('p', {}, 'Здесь отображается текущее состояние контейнера 3x-ui.'),
 			E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 16px' }, [ firstButton, stopButton, view.routingButton ])
 		];

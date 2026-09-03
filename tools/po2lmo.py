@@ -2,7 +2,7 @@
 """Small development-time PO to LuCI LMO converter.
 
 The release build still uses OpenWrt's official po2lmo utility. This compatible
-converter lets NanoPi Control translations be tested on a router without
+converter lets WrtPilot translations be tested on a router without
 running the complete OpenWrt SDK build.
 """
 

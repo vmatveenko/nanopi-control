@@ -1,5 +1,5 @@
 'use strict';
-// NanoPi Control: persistent four-stage SD to eMMC workflow and actions.
+// WrtPilot: persistent four-stage SD to eMMC workflow and actions.
 'require view';
 'require rpc';
 'require ui';
@@ -247,7 +247,7 @@ return view.extend({
 		const root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('SD to eMMC')),
 			E('div', { 'class': 'cbi-map-descr' },
-				_('Transfer the current OpenWrt installation, settings and NanoPi Control from the SD card to internal eMMC without downloading another firmware image.'))
+				_('Transfer the current OpenWrt installation, settings and WrtPilot from the SD card to internal eMMC without downloading another firmware image.'))
 		]);
 
 		root.appendChild(E('div', {

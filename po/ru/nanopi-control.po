@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: NanoPi Control 0.2.1\n"
+"Project-Id-Version: WrtPilot 0.5.0\n"
 "Language: ru\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -29,8 +29,8 @@ msgstr "Нельзя очистить устройство, с которого 
 msgid "Internal eMMC is unavailable or another storage operation is running."
 msgstr "Внутренняя eMMC недоступна или уже выполняется другая операция с накопителем."
 
-msgid "NanoPi Control - Overview"
-msgstr "NanoPi Control — Обзор"
+msgid "WrtPilot - Overview"
+msgstr "WrtPilot - Обзор"
 
 msgid "Overview"
 msgstr "Обзор"
@@ -113,8 +113,8 @@ msgstr "Версия OpenWrt"
 msgid "Kernel version"
 msgstr "Версия ядра"
 
-msgid "NanoPi Control version"
-msgstr "Версия NanoPi Control"
+msgid "WrtPilot version"
+msgstr "Версия WrtPilot"
 
 msgid "Active IPv4 addresses"
 msgstr "Активные IPv4-адреса"
@@ -206,8 +206,8 @@ msgstr "Начать перенос"
 msgid "Copy engine is not enabled in this version"
 msgstr "Механизм копирования ещё не включён в этой версии"
 
-msgid "Transfer the current OpenWrt installation, settings and NanoPi Control from the SD card to internal eMMC without downloading another firmware image."
-msgstr "Перенос текущей установки OpenWrt, настроек и NanoPi Control с SD-карты во внутреннюю eMMC без скачивания другого образа прошивки."
+msgid "Transfer the current OpenWrt installation, settings and WrtPilot from the SD card to internal eMMC without downloading another firmware image."
+msgstr "Перенос текущей установки OpenWrt, настроек и WrtPilot с SD-карты во внутреннюю eMMC без скачивания другого образа прошивки."
 
 msgid "Warning: "
 msgstr "Внимание: "
@@ -347,8 +347,8 @@ msgstr "Не проверялось"
 msgid "Updates have not been checked"
 msgstr "Проверка обновлений ещё не выполнялась"
 
-msgid "NanoPi Control updates"
-msgstr "Обновления NanoPi Control"
+msgid "WrtPilot updates"
+msgstr "Обновления WrtPilot"
 
 msgid "Continue"
 msgstr "Продолжить"

@@ -1,6 +1,6 @@
 {
 	"admin/services/nanopi-control": {
-		"title": "NanoPi Control",
+		"title": "WrtPilot",
 		"order": 55,
 		"action": {
 			"type": "firstchild"

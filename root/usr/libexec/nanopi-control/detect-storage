@@ -82,6 +82,7 @@ for disk_path in "$SYS_BLOCK"/mmcblk[0-9]; do
 done
 
 supported=0
+# TODO(portability): add verified board/storage profiles before enabling migration on other devices.
 [ "$board_name" = "friendlyarm,nanopi-r5s" ] && supported=1
 
 transfer_available=0

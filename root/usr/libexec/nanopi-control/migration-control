@@ -28,6 +28,7 @@ write_job() {
 	mv "$tmp" "$JOB_FILE"
 }
 
+# TODO(portability): verify bootloader placement, partition layout and filesystems per board; keep R5S safeguards until tested.
 preflight() {
 	local status source target source_disk target_disk
 	local p1_start p1_size p2_start target_sectors used_kib used_bytes

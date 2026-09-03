@@ -15,6 +15,7 @@ VAULTWARDEN_PORT=8000
 CADDY_MARKER="/etc/nanopi-control/caddy-installed"
 CADDY_DATA_DIR="/opt/caddy"
 CADDY_CONTAINER="caddy"
+# TODO(portability): verify Docker packages and container images on other architectures before widening aarch64 checks.
 MIN_FREE_KIB=524288
 
 . /usr/share/libubox/jshn.sh

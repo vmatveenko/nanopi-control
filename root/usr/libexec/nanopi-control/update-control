@@ -83,7 +83,7 @@ check_update() {
 	repo="$(repository)"
 	write_state checking 0 "$current" "" "" 5 "Проверка релизов GitHub" ""
 
-	response="$(uclient-fetch -q -T 20 -U "NanoPi-Control/$current" \
+	response="$(uclient-fetch -q -T 20 -U "WrtPilot/$current" \
 		--header='Accept: application/vnd.github+json' \
 		-O - "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null)" || {
 		write_state error 0 "$current" "" "" 100 "Не удалось проверить обновления" "Запрос к GitHub завершился с ошибкой"
@@ -103,7 +103,7 @@ check_update() {
 	if version_is_newer "$latest" "$current"; then
 		write_state available 1 "$current" "$latest" "$tag" 0 "Доступна версия $latest ($published)" ""
 	elif [ "$latest" = "$current" ]; then
-		write_state current 0 "$current" "$latest" "$tag" 100 "Установлена актуальная версия NanoPi Control" ""
+		write_state current 0 "$current" "$latest" "$tag" 100 "Установлена актуальная версия WrtPilot" ""
 	else
 		write_state current 0 "$current" "$latest" "$tag" 100 "Установленная версия $current новее опубликованной $latest" ""
 	fi
@@ -124,7 +124,7 @@ case "$1" in
 		;;
 	start)
 		if ! clear_stale_lock; then
-			printf '%s\n' '{ "accepted": false, "error": "Обновление NanoPi Control уже выполняется" }'
+			printf '%s\n' '{ "accepted": false, "error": "Обновление WrtPilot уже выполняется" }'
 			exit 1
 		fi
 		state="$(check_update)" || exit 1

@@ -8,9 +8,14 @@ NFT_FAMILY="inet"
 NFT_TABLE="nanopi_xui"
 TUN_NAME="xray0"
 TUN_TAG="nanopi-control-tun-in"
-TUN_REMARK="NanoPi Control LAN TUN"
+TUN_REMARK="WrtPilot LAN TUN"
 TOKEN_NAME="openwrt-api-token"
-PANEL_PORT=2053
+PANEL_PORT=""
+PANEL_PATH="/"
+PANEL_KNOWN=0
+API_TIMEOUT=15
+PANEL_FIREWALL="nanopi_control_xui_panel"
+PANEL_FIREWALL_NAME="WrtPilot 3x-ui panel"
 MARK_VALUE="0x40000000"
 MARK_MASK="0x40000000"
 RULE4_PRIORITY=11000
@@ -50,7 +55,7 @@ tun_runtime_ready() {
 		return 1
 	}
 	docker container inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}}:{{.PathInContainer}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx '/dev/net/tun:/dev/net/tun' || {
-		LAST_ERROR="Контейнер 3x-ui создан без доступа к /dev/net/tun. Переустановите контейнер из панели NanoPi Control"
+		LAST_ERROR="Контейнер 3x-ui создан без доступа к /dev/net/tun. Переустановите контейнер из панели WrtPilot"
 		return 1
 	}
 	return 0
@@ -74,6 +79,174 @@ json_result() {
 	json_add_string message "$message"
 	json_add_string error "$error"
 	json_add_string warning "$warning"
+	json_dump
+}
+
+valid_panel_port() {
+	case "$1" in ''|*[!0-9]*|0*) return 1 ;; esac
+	[ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+normalize_panel_path() {
+	local path="$1"
+	[ -n "$path" ] || path="/"
+	case "$path" in *[!A-Za-z0-9/_~.-]*) return 1 ;; esac
+	case "$path" in /*) ;; *) path="/$path" ;; esac
+	case "$path" in */) ;; *) path="$path/" ;; esac
+	case "$path" in *//*|*/../*|*/./*) return 1 ;; esac
+	[ "${#path}" -le 200 ] || return 1
+	printf '%s' "$path"
+}
+
+load_panel_endpoint() {
+	local output port path
+	PANEL_KNOWN=0
+	container_running || return 1
+	output="$(docker exec "$CONTAINER" /app/x-ui setting -show true 2>/dev/null)" || return 1
+	port="$(printf '%s\n' "$output" | sed -n 's/^port: //p')"
+	path="$(printf '%s\n' "$output" | sed -n 's/^webBasePath: //p')"
+	valid_panel_port "$port" || return 1
+	path="$(normalize_panel_path "$path")" || return 1
+	PANEL_PORT="$port"
+	PANEL_PATH="$path"
+	PANEL_KNOWN=1
+}
+
+panel_wan_enabled() {
+	[ "$(uci -q get firewall.$PANEL_FIREWALL.name)" = "$PANEL_FIREWALL_NAME" ] &&
+	[ "$(uci -q get firewall.$PANEL_FIREWALL.enabled)" != "0" ]
+}
+
+apply_panel_firewall() {
+	local enabled="$1" port="$2" owner backup
+	owner="$(uci -q get firewall.$PANEL_FIREWALL.name)"
+	if uci -q get "firewall.$PANEL_FIREWALL" >/dev/null && [ "$owner" != "$PANEL_FIREWALL_NAME" ]; then
+		LAST_ERROR="Имя правила панели занято другим правилом firewall"
+		return 1
+	fi
+	[ "$enabled" = 0 ] && [ -z "$owner" ] && return 0
+	if [ "$enabled" = 1 ] && panel_wan_enabled &&
+		[ "$(uci -q get firewall.$PANEL_FIREWALL.dest_port)" = "$port" ]; then return 0; fi
+	[ -z "$(uci changes firewall)" ] || {
+		LAST_ERROR="Сначала сохраните или отмените другие изменения firewall"
+		return 1
+	}
+	backup="$(mktemp -d /root/wrtpilot-panel-firewall-XXXXXX)" || return 1
+	cp -p /etc/config/firewall "$backup/firewall" || return 1
+	if [ "$enabled" = 1 ]; then
+		uci set "firewall.$PANEL_FIREWALL=rule" &&
+		uci set "firewall.$PANEL_FIREWALL.name=$PANEL_FIREWALL_NAME" &&
+		uci set "firewall.$PANEL_FIREWALL.src=wan" &&
+		uci set "firewall.$PANEL_FIREWALL.proto=tcp" &&
+		uci set "firewall.$PANEL_FIREWALL.dest_port=$port" &&
+		uci set "firewall.$PANEL_FIREWALL.target=ACCEPT" &&
+		uci set "firewall.$PANEL_FIREWALL.family=any" &&
+		uci set "firewall.$PANEL_FIREWALL.enabled=1"
+	else
+		uci delete "firewall.$PANEL_FIREWALL"
+	fi
+	if [ "$?" -ne 0 ] || ! uci commit firewall || ! fw4 check >/dev/null 2>&1 ||
+		! /etc/init.d/firewall reload >/dev/null 2>&1; then
+		uci revert firewall
+		cp -p "$backup/firewall" /etc/config/firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+		LAST_ERROR="Не удалось применить правило доступа к панели; прежняя конфигурация восстановлена"
+		return 1
+	fi
+	return 0
+}
+
+write_panel_endpoint() {
+	local port="$1" path="$2" output
+	output="$(docker exec "$CONTAINER" /app/x-ui setting -port "$port" -webBasePath "$path" 2>&1)" || return 1
+	printf '%s\n' "$output" | grep -Fxq "Port set successfully: $port" &&
+	printf '%s\n' "$output" | grep -Fxq 'Base URI path set successfully'
+}
+
+wait_panel_endpoint() {
+	local token="$1" tries=0 API_TIMEOUT=1
+	while [ "$tries" -lt 8 ]; do
+		validate_token "$token" && return 0
+		sleep 1
+		tries="$((tries + 1))"
+	done
+	return 1
+}
+
+panel_port_in_use() {
+	awk -v port="$(printf '%04X' "$1")" '$4 == "0A" { split($2,a,":"); if (toupper(a[2]) == port) found=1 } END { exit !found }' /proc/net/tcp /proc/net/tcp6
+}
+
+container_host_network() {
+	[ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER")" = host ]
+}
+
+save_panel_settings() {
+	local supplied="$1" port="$2" path="$3" wan="$4" token old_port old_path old_wan old_rule_port
+	local changed=0 failure="" rollback_error="" API_TIMEOUT=5
+	take_lock
+	load_panel_endpoint || { json_result 0 "" "Не удалось прочитать настройки работающей панели" ""; return 1; }
+	container_host_network || {
+		json_result 0 "" "Поддерживается только сеть host" ""; return 1
+	}
+	valid_panel_port "$port" || { json_result 0 "" "Укажите порт от 1 до 65535" ""; return 1; }
+	path="$(normalize_panel_path "$path")" || {
+		json_result 0 "" "Некорректный URL-путь: используйте буквы A–Z, цифры, /, _, -, . или ~ без .. и //" ""; return 1
+	}
+	case "$wan" in 1|true) wan=1 ;; *) wan=0 ;; esac
+	old_port="$PANEL_PORT"; old_path="$PANEL_PATH"
+	old_wan=0; panel_wan_enabled && old_wan=1
+	old_rule_port="$(uci -q get firewall.$PANEL_FIREWALL.dest_port)"
+	[ -n "$old_rule_port" ] || old_rule_port="$old_port"
+	if [ "$port" != "$old_port" ]; then
+		# /proc includes IPv4 and IPv6 listeners even on minimal OpenWrt without ss.
+		if panel_port_in_use "$port"; then
+			json_result 0 "" "Указанный TCP-порт уже занят" ""; return 1
+		fi
+	fi
+	if [ -n "$supplied" ]; then
+		valid_token_format "$supplied" && validate_token "$supplied" || {
+			json_result 0 "" "Указанный API-токен не прошёл проверку" ""; return 1
+		}
+		token="$supplied"
+	else
+		ensure_working_token || { json_result 0 "" "$LAST_ERROR" ""; return 1; }
+		token="$WORKING_TOKEN"
+	fi
+	if [ "$port:$path" != "$old_port:$old_path" ]; then
+		changed=1
+		if ! write_panel_endpoint "$port" "$path"; then
+			failure="Не удалось записать порт и URL-путь панели"
+		elif ! api_request POST /panel/api/setting/restartPanel "$token" '{}' || ! api_success "$API_RESPONSE"; then
+			failure="Не удалось перезапустить панель для применения настроек"
+		else
+			PANEL_PORT="$port"; PANEL_PATH="$path"
+			wait_panel_endpoint "$token" || failure="Панель не ответила по новому адресу"
+		fi
+	fi
+	if [ -z "$failure" ]; then
+		apply_panel_firewall "$wan" "$port" || failure="$LAST_ERROR"
+	fi
+	if [ -z "$failure" ] && [ -n "$supplied" ]; then
+		save_token_file "$supplied" || failure="Не удалось сохранить API-токен"
+	fi
+	if [ -n "$failure" ]; then
+		if [ "$changed" = 1 ]; then
+			if write_panel_endpoint "$old_port" "$old_path" && docker kill --signal=HUP "$CONTAINER" >/dev/null 2>&1; then
+				PANEL_PORT="$old_port"; PANEL_PATH="$old_path"
+				wait_panel_endpoint "$token" || rollback_error=" Панель пока не отвечает по прежнему адресу."
+			else rollback_error=" Не удалось восстановить прежний адрес панели."; fi
+		fi
+		apply_panel_firewall "$old_wan" "$old_rule_port" || rollback_error="$rollback_error Не удалось восстановить правило firewall."
+		json_result 0 "" "$failure$rollback_error" ""
+		return 1
+	fi
+	json_init
+	json_add_boolean accepted 1
+	json_add_string panel_port "$PANEL_PORT"
+	json_add_string panel_path "$PANEL_PATH"
+	json_add_boolean panel_wan "$wan"
+	json_add_string message "Настройки панели сохранены"
 	json_dump
 }
 
@@ -132,6 +305,8 @@ status() {
 	json_add_string network_mode "$network_mode"
 	json_add_string fail2ban "${fail2ban:-false}"
 	json_add_string panel_port "$PANEL_PORT"
+	json_add_string panel_path "$PANEL_PATH"
+	json_add_boolean panel_settings_known "$PANEL_KNOWN"
 	json_add_string data_path /opt/3x-ui
 	json_add_boolean routing_active "$routing_active"
 	json_add_boolean routing_degraded "$degraded"
@@ -191,20 +366,21 @@ api_request() {
 	local method="$1" path="$2" token="$3" body="$4"
 	local response_file="/tmp/nanopi-control/xui-api-response.$$"
 	local error_file="/tmp/nanopi-control/xui-api-error.$$"
-	local url="http://127.0.0.1:${PANEL_PORT}${path}" rc
+	local url="http://127.0.0.1:${PANEL_PORT}${PANEL_PATH}${path#/}" rc
 
 	API_RESPONSE=""
 	API_AUTH_FAILED=0
+	[ "$PANEL_KNOWN" = 1 ] || { LAST_ERROR="Не удалось определить адрес панели"; return 1; }
 	rm -f "$response_file" "$error_file"
 	if [ "$method" = "GET" ]; then
-		uclient-fetch -O "$response_file" --timeout=15 --no-proxy \
+		uclient-fetch -O "$response_file" --timeout="$API_TIMEOUT" --no-proxy \
 			--header="Authorization: Bearer $token" \
 			--header="Accept: application/json" \
 			--header="X-Requested-With: XMLHttpRequest" \
 			"$url" 2>"$error_file"
 		rc=$?
 	else
-		uclient-fetch -O "$response_file" --timeout=15 --no-proxy \
+		uclient-fetch -O "$response_file" --timeout="$API_TIMEOUT" --no-proxy \
 			--method="$method" --body-data="$body" \
 			--header="Authorization: Bearer $token" \
 			--header="Accept: application/json" \
@@ -372,6 +548,46 @@ issue_token_command() {
 	json_result 1 "Токен $TOKEN_NAME выпущен, проверен и сохранён" "" ""
 }
 
+reset_password_command() {
+	local password reset_output warning=""
+	take_lock
+	container_running || {
+		json_result 0 "" "Контейнер 3x-ui не запущен" ""
+		exit 1
+	}
+	ensure_working_token || {
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	}
+	password="$(LC_ALL=C tr -dc 'A-Za-z0-9!@%+=_-' </dev/urandom | head -c 20)"
+	[ "${#password}" -eq 20 ] || {
+		json_result 0 "" "Не удалось сгенерировать пароль" ""
+		exit 1
+	}
+	# 3x-ui 3.7.0 updateUser requires the old password even with an API token.
+	# The supported local CLI resets credentials without changing 2FA settings.
+	# Feed the password through stdin; never put it in host command arguments or logs.
+	if ! reset_output="$(printf '%s\n' "$password" | docker exec -i "$CONTAINER" sh -c '
+		IFS= read -r password || exit 1
+		exec /app/x-ui setting -username admin -password "$password"
+	' 2>&1)" || ! printf '%s\n' "$reset_output" | grep -Fxq 'Username and password updated successfully'; then
+		password=""
+		json_result 0 "" "Не удалось сбросить пароль администратора 3x-ui" ""
+		exit 1
+	fi
+	# Once credentials changed, always return the new password, including when
+	# a subsequent token check fails, so the user cannot lose the new credentials.
+	ensure_working_token || warning="Пароль изменён, но проверка API-токена не завершена: $LAST_ERROR"
+	json_init
+	json_add_boolean accepted 1
+	json_add_string username admin
+	json_add_string password "$password"
+	json_add_string message "Пароль администратора изменён"
+	json_add_string warning "$warning"
+	json_dump
+	password=""
+}
+
 normalize_list() {
 	local raw="$1" family="$2" output="$3" validation="/tmp/nanopi-control/xui-validate.$$" elements line
 	printf '%s\n' "$raw" | tr -d '\r' | awk '
@@ -454,6 +670,10 @@ settings_status() {
 	json_init
 	json_add_boolean token_configured "$token_configured"
 	json_add_string token_name "$TOKEN_NAME"
+	json_add_string panel_port "$PANEL_PORT"
+	json_add_string panel_path "$PANEL_PATH"
+	json_add_boolean panel_settings_known "$PANEL_KNOWN"
+	json_add_boolean panel_wan "$(panel_wan_enabled && echo 1 || echo 0)"
 	json_add_string exclude4 "$exclude4"
 	json_add_string exclude6 "$exclude6"
 	json_add_boolean block_ipv6 "$block"
@@ -647,7 +867,7 @@ ensure_managed_tun() {
 		return 1
 	fi
 	if [ -z "$FOUND_ID" ] && ip link show dev "$TUN_NAME" >/dev/null 2>&1; then
-		LAST_ERROR="Интерфейс $TUN_NAME уже существует и не принадлежит NanoPi Control"
+		LAST_ERROR="Интерфейс $TUN_NAME уже существует и не принадлежит WrtPilot"
 		return 1
 	fi
 	payload="$(build_tun_payload "$wan" "$FOUND_ID")"
@@ -858,6 +1078,10 @@ set_routing() {
 
 purge_settings() {
 	take_lock
+	apply_panel_firewall 0 "$PANEL_PORT" || {
+		json_result 0 "" "$LAST_ERROR" ""
+		exit 1
+	}
 	disable_routing
 	rm -f "$TOKEN_FILE" "${TOKEN_FILE}.tmp."*
 	uci -q delete nanopi-control.xui
@@ -865,11 +1089,15 @@ purge_settings() {
 	json_result 1 "Настройки и правила 3x-ui удалены" "" ""
 }
 
+load_panel_endpoint || true
+
 case "$1" in
 	status) status ;;
 	settings) settings_status ;;
 	save) save_settings "$2" "$3" "$4" "$5" ;;
+	save-panel) save_panel_settings "$2" "$3" "$4" "$5" ;;
 	issue-token) issue_token_command ;;
+	reset-password) reset_password_command ;;
 	routing) set_routing "$2" ;;
 	purge) purge_settings ;;
 	action) action "$2" ;;

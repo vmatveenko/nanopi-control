@@ -2,7 +2,7 @@
 
 case "$1" in
 	list)
-		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "xui_status": {}, "xui_settings": {}, "xui_settings_save": { "token": "", "exclude4": "", "exclude6": "", "block_ipv6": false }, "xui_token_issue": {}, "xui_routing_set": { "enabled": false }, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
+		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "modules_start": { "module": "", "action": "", "confirmation": "" }, "xui_status": {}, "xui_settings": {}, "xui_settings_save": { "token": "", "exclude4": "", "exclude6": "", "block_ipv6": false }, "xui_panel_save": { "token": "", "port": "", "path": "", "wan": false }, "xui_token_issue": {}, "xui_password_reset": {}, "xui_routing_set": { "enabled": false }, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
 		;;
 	call)
 		payload="$(cat)"
@@ -69,8 +69,18 @@ case "$1" in
 				block_ipv6="$(jsonfilter -s "$payload" -e '@.block_ipv6' 2>/dev/null)"
 				exec /usr/libexec/nanopi-control/3xui-control save "$token" "$exclude4" "$exclude6" "$block_ipv6"
 				;;
+			xui_panel_save)
+				token="$(jsonfilter -s "$payload" -e '@.token' 2>/dev/null)"
+				port="$(jsonfilter -s "$payload" -e '@.port' 2>/dev/null)"
+				path="$(jsonfilter -s "$payload" -e '@.path' 2>/dev/null)"
+				wan="$(jsonfilter -s "$payload" -e '@.wan' 2>/dev/null)"
+				exec /usr/libexec/nanopi-control/3xui-control save-panel "$token" "$port" "$path" "$wan"
+				;;
 			xui_token_issue)
 				exec /usr/libexec/nanopi-control/3xui-control issue-token
+				;;
+			xui_password_reset)
+				exec /usr/libexec/nanopi-control/3xui-control reset-password
 				;;
 			xui_routing_set)
 				enabled="$(jsonfilter -s "$payload" -e '@.enabled' 2>/dev/null)"

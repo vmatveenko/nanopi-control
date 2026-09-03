@@ -167,7 +167,7 @@ transfer() {
 
 	target_state="$TARGET_MOUNT$STATE_FILE"
 	write_persistent_state "$target_state" copy_verifying "$source" "$target" || fail "Unable to save copy verification state"
-	[ -x "$TARGET_MOUNT/usr/libexec/nanopi-control/detect-storage" ] || fail "NanoPi Control was not copied to eMMC"
+	[ -x "$TARGET_MOUNT/usr/libexec/nanopi-control/detect-storage" ] || fail "WrtPilot was not copied to eMMC"
 	[ -r "$TARGET_MOUNT/etc/openwrt_release" ] || fail "OpenWrt release information is missing on eMMC"
 	sync
 
