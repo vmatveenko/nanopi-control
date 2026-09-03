@@ -1,95 +1,60 @@
 # NanoPi Control
 
-NanoPi Control is a LuCI module for FriendlyElec NanoPi R5S running OpenWrt.
-It appears under **Services → NanoPi Control** and provides device diagnostics,
-offline migration from an SD card to internal eMMC, storage expansion and
-self-updates from GitHub Releases.
+NanoPi Control — приложение LuCI для FriendlyElec NanoPi R5S под управлением
+OpenWrt. Оно добавляется в меню **Сервисы → NanoPi Control** и объединяет
+сведения о системе, перенос OpenWrt между SD-картой и eMMC, расширение
+разделов, управление дополнительными модулями и обновление из GitHub Releases.
 
-> The storage migration code is intentionally restricted to
-> `friendlyarm,nanopi-r5s`, an ext4 root filesystem and the official OpenWrt
-> Rockchip partition layout. It refuses to run when a safety check fails.
+> Операции с накопителями намеренно ограничены платой NanoPi R5S, корневой
+> файловой системой ext4 и ожидаемой разметкой официального образа OpenWrt.
+> Если хотя бы одна проверка безопасности не пройдена, операция не запускается.
 
-## Features
+## Возможности
 
-- overview of the device, OpenWrt release, memory and storage;
-- reliable detection of the actual root block device through
-  `/proc/self/mountinfo` and `/sys/dev/block`;
-- distinction between removable SD and internal eMMC boot;
-- an **SD to eMMC** tab shown on every SD boot and until migration is fully
-  completed when running from eMMC;
-- safe eMMC erasure while booted from SD, including migration-state reset;
-- offline copy of the current OpenWrt installation, packages, configuration and
-  NanoPi Control itself;
-- verification of the copied boot partition and ext4 filesystem;
-- post-boot expansion of partition 2 and ext4 to the full eMMC capacity;
-- offline expansion of an inserted OpenWrt SD card while booted from eMMC,
-  capped at the usable eMMC size so the card remains transferable;
-- a dependency-aware modules table with background installation, progress and
-  removal actions;
-- one-click Docker Engine, Compose, Dockerman and Russian Dockerman
-  localization installation;
-- Docker-backed 3x-ui, Vaultwarden and Caddy modules with installation,
-  removal, container state information and start/stop/restart controls;
-- GitHub release check and one-click package update;
-- Russian LuCI translation.
+- сведения о модели, версии OpenWrt, ядре, памяти, сетевых адресах и
+  накопителях;
+- надёжное определение активного корневого устройства через
+  `/proc/self/mountinfo` и `/sys/dev/block`;
+- определение загрузки с SD-карты или внутренней eMMC;
+- пошаговый перенос работающей OpenWrt с SD-карты на eMMC;
+- проверка загрузочного раздела и файловой системы после копирования;
+- расширение раздела и ext4 после первой загрузки с eMMC;
+- автономное расширение вставленной SD-карты OpenWrt при загрузке с eMMC;
+- таблица модулей с зависимостями, фоновыми операциями и живым прогрессом;
+- установка Docker Engine, Docker Compose, Dockerman и русской локализации;
+- управление контейнерами 3x-ui, Vaultwarden и Caddy;
+- маршрутизация LAN через TUN-интерфейс 3x-ui с исключениями IPv4 и IPv6;
+- проверка GitHub Releases и установка новой версии из LuCI;
+- русский интерфейс LuCI.
 
-## Requirements
+## Требования
 
 - FriendlyElec NanoPi R5S;
-- OpenWrt with target `rockchip/armv8`;
-- ext4 sysupgrade image;
-- working internet access for installing NanoPi Control and checking updates;
-- no internet is required during SD → eMMC transfer.
+- OpenWrt 25.12 для цели `rockchip/armv8`;
+- образ OpenWrt с корневой файловой системой ext4;
+- доступ в интернет для установки пакета, модулей и обновлений;
+- не менее 512 МиБ свободного места для установки Docker.
 
-The package installs these runtime dependencies automatically: `parted`,
-`e2fsprogs`, `rsync`, `ca-bundle` and `uclient-fetch`.
+Для переноса SD → eMMC интернет не требуется. Пакет NanoPi Control объявляет
+системные зависимости `parted`, `e2fsprogs`, `rsync`, `ca-bundle` и
+`uclient-fetch`; `apk` устанавливает их автоматически из настроенных
+репозиториев OpenWrt.
 
-## Modules
+OpenWrt 24.10 и более ранние версии используют `opkg` и текущими APK-релизами
+не поддерживаются.
 
-The **Overview** page contains a dependency-aware modules table. Docker
-installation runs in the background and installs `dockerd`, `docker`,
-`docker-compose`, `luci-app-dockerman` and
-`luci-i18n-dockerman-ru`, then enables and starts `dockerd` and verifies the
-engine with `docker info`.
+## Установка на чистую OpenWrt
 
-Docker installation is offered on `aarch64` systems with at least 512 MiB of
-free root filesystem space. Removing the module removes its packages but keeps
-Docker data in `/opt/docker`.
-
-The following container modules declare Docker as a dependency. Dependencies
-are shown to the user and are not installed implicitly by NanoPi Control:
-
-- **3x-ui** uses the `ghcr.io/mhsanaei/3x-ui:latest` image, host networking and
-  persistent data below `/opt/3x-ui`;
-- **Vaultwarden** uses the `vaultwarden/server:latest` image, host networking,
-  port `8000` and persistent data below `/opt/vaultwarden`;
-- **Caddy** uses the lightweight official `caddy:2-alpine` image, host
-  networking and persistent configuration and data below `/opt/caddy`.
-
-Each installed container module has its own LuCI page with container metadata,
-runtime state and start, stop and restart actions. Module removal requires an
-explicit confirmation and removes the managed container, image and module data.
-Caddy is currently installed with a minimal configuration that exposes only
-its administrative API on `127.0.0.1:2019`; DNS records, HTTPS sites and
-Vaultwarden proxying are intentionally left for a later configuration stage.
-
-## Expanding an OpenWrt SD card
-
-When the NanoPi is booted from eMMC, inserting an unmounted SD card with the
-expected OpenWrt ext4 layout adds an SD-card row to **System information**. The
-expansion action grows partition 2 and its ext4 filesystem offline. The target
-size is the smaller of the usable SD-card capacity and usable eMMC capacity,
-which keeps the resulting system suitable for a later SD → eMMC transfer.
-
-When booted from the SD card itself, NanoPi Control shows a hint to boot from
-eMMC and insert the card before expansion. It never attempts to resize the
-active SD root filesystem.
-
-## Installation from GitHub Release
-
-Connect to OpenWrt over SSH and run:
+1. Запишите официальный ext4-образ OpenWrt 25.12 для NanoPi R5S на SD-карту.
+2. Загрузите устройство, настройте LAN, интернет и пароль пользователя `root`.
+3. Подключитесь к NanoPi по SSH и выполните:
 
 ```sh
+(
+set -e
+apk update
+apk add ca-bundle uclient-fetch
+
 cd /tmp
 uclient-fetch -O luci-app-nanopi-control.apk \
   https://github.com/vmatveenko/nanopi-control/releases/latest/download/luci-app-nanopi-control.apk
@@ -105,137 +70,206 @@ apk --allow-untrusted add \
   ./luci-app-nanopi-control.apk \
   ./luci-i18n-nanopi-control-ru.apk
 
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+rm -rf /tmp/luci-modulecache
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
+)
 ```
 
-Then open LuCI and navigate to **Services → NanoPi Control**.
+Параметр `--allow-untrusted` нужен потому, что APK из GitHub Release не входит
+в подписанный официальный репозиторий OpenWrt. Целостность файлов перед
+установкой проверяется по опубликованному `SHA256SUMS`.
 
-OpenWrt 24.10 and older use `opkg` and are not supported by the current release
-packages. The source can still be built in an older SDK, but the migration path
-has only been designed for the OpenWrt 25.12 package environment.
+После установки откройте LuCI и перейдите в
+**Сервисы → NanoPi Control → Обзор**.
 
-## Updating NanoPi Control
+## Обзор и модули
 
-Open **Services → NanoPi Control → Overview** and select
-**Check for updates**. If a newer GitHub Release exists, the page offers an
-update button.
+Страница **Обзор** содержит таблицу сведений о системе, таблицу модулей и блок
+обновления NanoPi Control. В блоке обновления отображаются установленная версия
+и последний выпуск. Сначала выполняется проверка, а кнопка установки появляется
+только при наличии более новой версии.
 
-The updater:
+Зависимости модулей показываются явно и не устанавливаются автоматически.
+Пользователь сам устанавливает необходимый базовый модуль. Операции выполняются
+в фоне; LuCI показывает этап, процент, объём загрузки и скорость.
 
-1. queries the latest release of `vmatveenko/nanopi-control`;
-2. downloads the application APK, Russian translation and `SHA256SUMS`;
-3. verifies both package hashes;
-4. installs the packages with `apk --allow-untrusted add`;
-5. restarts NanoPi Control, rpcd and uhttpd;
-6. reloads the LuCI page.
+### Docker
 
-Update progress is stored in `/tmp/nanopi-control/update.json` and detailed
-worker output is written to `/tmp/nanopi-control/update.log`. The updater
-verifies the installed version after `apk` completes, recovers stale operation
-locks and never replaces a newer installed version with an older release.
+Модуль устанавливает пакеты:
 
-The repository can be changed through the UCI option
-`nanopi-control.main.repository` for development forks.
+- `dockerd`;
+- `docker`;
+- `docker-compose`;
+- `luci-app-dockerman`;
+- `luci-i18n-dockerman-ru`.
 
-## SD → eMMC migration
+После установки служба `dockerd` включается в автозагрузку и проверяется через
+`docker info`. При удалении Docker сначала удаляются зависимые управляемые
+контейнеры и их данные. Каталог Docker `/opt/docker` сохраняется.
 
-### What is copied
+### 3x-ui
 
-NanoPi Control does not download another OpenWrt image. It transfers the system
-that is currently running from the SD card, including:
+Контейнер использует образ `ghcr.io/mhsanaei/3x-ui:latest`, сеть хоста,
+возможности `NET_ADMIN` и `NET_RAW`, устройство `/dev/net/tun` и постоянные
+данные в `/opt/3x-ui`. Панель по умолчанию доступна на порту `2053`.
 
-- OpenWrt and installed packages;
-- `/etc/config` and other persistent settings;
-- users and passwords;
-- NanoPi Control and its migration state.
+Для TUN необходимо устройство `/dev/net/tun` (пакет OpenWrt `kmod-tun`).
+Если оно отсутствует, установите `apk add kmod-tun` до установки 3x-ui.
+Маршрутизация использует штатный `fw4` и `nftables`; диагностические
+`tcpdump-mini` и `ip-full` не являются зависимостями приложения.
 
-Temporary filesystems (`/tmp`, `/run`, `/proc`, `/sys`, `/dev`) are not copied.
-Docker, images, volumes and containers are migrated when Docker's data root is
-part of the SD root filesystem. NanoPi Control performs the initial copy while
-services remain available, briefly stops `dockerd` for the final synchronized
-copy and then starts it again on the SD system. A separately mounted
-`/opt/docker` is rejected because crossing that filesystem boundary would need
-a separate capacity calculation and copy plan. When Docker is installed, the
-temporary eMMC root partition also receives a 1 GiB free-space margin before
-the final expansion step.
+Страница 3x-ui разделена на три вкладки:
 
-### Safety model
+- **Информация** — состояние контейнера, версия, параметры запуска, ссылка на
+  панель и состояние маршрутизации;
+- **Настройка** — API-токен 3x-ui;
+- **Маршрутизация** — пользовательские исключения IPv4 и IPv6 и блокировка
+  внешнего IPv6.
 
-- the source SD card is never partitioned, formatted or written to;
-- the target must be a non-removable MMC device different from the current root
-  device;
-- the board must report `friendlyarm,nanopi-r5s`;
-- root must be ext4;
-- the source layout must use partition 1 at sector `65536` with `32768`
-  sectors and partition 2 at sector `131072`;
-- target capacity and all required utilities are checked;
-- the exact target device name must be entered before the destructive action;
-- a global lock prevents two storage jobs from running simultaneously;
-- the boot partition is verified with SHA-256 and the copied root filesystem is
-  checked with `e2fsck -fn`.
+API-токен можно вставить вручную либо выпустить из LuCI. Автоматически созданный
+токен сохраняется в OpenWrt и отображается в панели 3x-ui под именем
+`openwrt-api-token`. Если сохранённый токен перестал работать, backend пытается
+выпустить новый и продолжить операцию прозрачно для пользователя.
 
-### Migration steps
+Кнопка в верхней части страницы включает и выключает маршрутизацию LAN. При
+включении NanoPi Control:
 
-1. Flash the official NanoPi R5S **ext4** OpenWrt image to an SD card.
-2. Boot NanoPi R5S from the card and configure LAN, internet and the root
-   password.
-3. Install NanoPi Control using the release instructions above.
-4. Open **Services → NanoPi Control → SD to eMMC**.
-5. Confirm that every preflight check is green.
-6. Enter the displayed target device name, normally `/dev/mmcblk1`.
-7. Start the transfer and wait until the progress reaches 100%. The copied
-   eMMC system stores the `copy_completed` state.
-8. Shut the NanoPi down. Do not reboot while copying is in progress.
-9. Remove the SD card and start the NanoPi again.
-10. Open NanoPi Control. In step 3 select **Confirm boot from eMMC**. The module
-    verifies the active root device and stores `boot_confirmed` on eMMC.
-11. In the step 4 card select **Expand internal storage**.
-12. If the kernel asks for one intermediate reboot, reboot and return to the
-    transfer page to finish ext4 expansion.
-13. Successful expansion stores `expansion_completed`; the transfer tab then
-    disappears while running from eMMC.
-14. Keep the SD card unchanged until normal networking and LuCI access from
-    eMMC have been confirmed.
+1. проверяет контейнер, API-токен и отсутствие конфликтующего управляемого
+   входящего соединения;
+2. создаёт или обновляет TUN-входящее соединение 3x-ui;
+3. ожидает интерфейс `xray0`;
+4. помечает LAN-трафик с учётом исключений;
+5. направляет помеченные IPv4- и IPv6-пакеты через отдельные таблицы policy
+   routing;
+6. добавляет разрешения `br-lan ↔ xray0` в штатный firewall `fw4`.
 
-### Erasing eMMC and resetting the assistant
+Локальные, служебные, multicast- и непосредственно подключённые сети
+добавляются в исключения автоматически. Пользовательские сети сохраняются в
+UCI. Если изменить их при активной маршрутизации, правила сразу применяются
+повторно.
 
-When OpenWrt is running from the SD card, the **SD to eMMC** page offers one
-device confirmation field and two actions: **Erase eMMC and start transfer**
-and **Erase eMMC**. Both require the exact internal device name. Erasing removes
-partition and filesystem signatures and the migration state, so the assistant
-returns to the live preflight step. The operation is rejected when eMMC is the
-active system device or any of its partitions is mounted.
+Режим работает по принципу fail-closed: если маршрутизация включена, а
+контейнер или `xray0` недоступен, трафик не переключается незаметно на обычный
+WAN. Остановка контейнера сохраняет fail-closed до повторного запуска 3x-ui или
+ручного выключения маршрутизации. При удалении 3x-ui правила, API-токен и
+пользовательские исключения удаляются до удаления контейнера.
 
-Migration state is stored on eMMC. When booted from SD, NanoPi Control mounts
-the eMMC root filesystem read-only just long enough to read this state. This is
-why a completed eMMC still shows all four completed stages after booting the
-recovery SD card, while the tab stays hidden after a completed eMMC boot.
+При включённой настройке **Блокировать IPv6** внешний IPv6-трафик LAN
+отклоняется, кроме автоматически и вручную заданных исключений.
 
-The first-stage target root partition is intentionally created with only the
-space needed for the current installation plus a safety margin. The final step
-expands it to the entire eMMC. This provides a clear checkpoint between copying
-and committing to the new boot device.
+### Vaultwarden
 
-### Recovery
+Vaultwarden использует образ `vaultwarden/server:latest`, сеть хоста, порт
+`8000` и каталог `/opt/vaultwarden`. На отдельной странице доступны состояние,
+сведения о контейнере и команды запуска, остановки и перезапуска.
 
-If NanoPi does not boot from eMMC, power it off, insert the original SD card and
-boot again. Because the SD card was not modified, NanoPi Control reappears and
-the transfer can be diagnosed or repeated. A failed copy may leave eMMC in a
-partial state, but repeating the transfer recreates its partition table and
-filesystems.
+### Caddy
 
-Migration progress is available through:
+Caddy использует образ `caddy:2-alpine`, сеть хоста и каталоги
+`/opt/caddy/data` и `/opt/caddy/config`. Начальная конфигурация открывает только
+административный API на `127.0.0.1:2019`. Настройка DNS, HTTPS-сайтов и reverse
+proxy для Vaultwarden пока выполняется отдельно.
+
+## Обновление NanoPi Control
+
+Откройте **Сервисы → NanoPi Control → Обзор** и нажмите
+**Проверить обновление**. Если GitHub содержит более новый выпуск, появится
+кнопка его установки.
+
+Обработчик обновления:
+
+1. запрашивает последний Release репозитория `vmatveenko/nanopi-control`;
+2. загружает приложение, русскую локализацию и `SHA256SUMS`;
+3. проверяет хеши обоих APK;
+4. устанавливает пакеты через `apk --allow-untrusted add`;
+5. перезапускает NanoPi Control, `rpcd` и `uhttpd`;
+6. после восстановления служб обновляет страницу LuCI.
+
+Состояние хранится в `/tmp/nanopi-control/update.json`, подробный журнал — в
+`/tmp/nanopi-control/update.log`. Обработчик восстанавливается после зависших
+операций и не заменяет установленную версию более старым выпуском.
+
+Для тестового форка репозиторий можно изменить параметром UCI
+`nanopi-control.main.repository`.
+
+## Расширение SD-карты OpenWrt
+
+Если NanoPi загружен с eMMC, вставленная и не смонтированная SD-карта с
+ожидаемой ext4-разметкой OpenWrt появляется в таблице системной информации.
+NanoPi Control автономно расширяет второй раздел и ext4 до меньшего из двух
+значений: доступного объёма SD-карты и полезного объёма eMMC. Благодаря этому
+систему с SD-карты впоследствии можно перенести обратно на eMMC.
+
+Активный корневой раздел SD-карты никогда не изменяется. При загрузке с SD
+интерфейс предлагает загрузиться с eMMC и только после этого вставить карту.
+
+## Перенос SD → eMMC
+
+NanoPi Control не загружает другой образ OpenWrt. На eMMC переносится текущая
+работающая система, включая установленные пакеты, настройки, пользователей,
+пароли и состояние мастера переноса.
+
+Не копируются временные файловые системы `/tmp`, `/run`, `/proc`, `/sys` и
+`/dev`. Если данные Docker находятся внутри корневой файловой системы, они тоже
+переносятся. Для финальной синхронизации `dockerd` кратковременно
+останавливается, после чего снова запускается на исходной системе. Отдельно
+смонтированный `/opt/docker` не поддерживается.
+
+### Модель безопасности
+
+- исходная SD-карта не переразмечается и не форматируется;
+- целевое устройство должно быть внутренней MMC и отличаться от активного
+  корневого устройства;
+- плата должна определяться как `friendlyarm,nanopi-r5s`;
+- корневая файловая система должна быть ext4;
+- разметка источника должна соответствовать ожидаемой разметке OpenWrt;
+- проверяются вместимость eMMC и наличие необходимых утилит;
+- перед разрушительной операцией требуется ввести точное имя устройства;
+- общий lock запрещает одновременные операции с накопителями;
+- загрузочный раздел проверяется по SHA-256, а ext4 — через `e2fsck -fn`.
+
+### Порядок переноса
+
+1. Загрузите NanoPi R5S с подготовленной SD-карты OpenWrt.
+2. Установите NanoPi Control и откройте вкладку **SD → eMMC**.
+3. Убедитесь, что все предварительные проверки пройдены.
+4. Введите показанное имя eMMC, обычно `/dev/mmcblk1`.
+5. Запустите очистку и перенос и дождитесь 100%. Не выключайте устройство во
+   время копирования.
+6. Корректно выключите NanoPi, извлеките SD-карту и загрузитесь с eMMC.
+7. Откройте NanoPi Control и подтвердите загрузку с eMMC.
+8. Запустите расширение внутреннего раздела.
+9. Если ядро запросит промежуточную перезагрузку, перезагрузите NanoPi и снова
+   откройте мастер для завершения расширения ext4.
+10. Не изменяйте исходную SD-карту, пока не проверите сеть и LuCI на eMMC.
+
+После успешного расширения сохраняется состояние `expansion_completed`, а
+вкладка переноса скрывается при работе с eMMC.
+
+### Очистка eMMC и восстановление
+
+При загрузке с SD мастер позволяет очистить eMMC отдельно либо очистить её и
+сразу начать перенос. Очистка удаляет сигнатуры разделов, файловых систем и
+состояние мастера. Операция запрещена, если eMMC является активным системным
+устройством или её разделы смонтированы.
+
+Если загрузка с eMMC не удалась, выключите NanoPi, вставьте исходную SD-карту и
+загрузитесь снова. Поскольку источник не изменялся, перенос можно проверить и
+повторить.
+
+Состояние и журнал доступны по SSH:
 
 ```sh
 ubus call nanopi-control migration_status
 cat /tmp/nanopi-control/migration.log
 ```
 
-## Building
+## Сборка
 
-Place the repository in `package/luci-app-nanopi-control` inside an OpenWrt
-25.12 SDK or buildroot:
+Поместите репозиторий в `package/luci-app-nanopi-control` внутри OpenWrt 25.12
+SDK или buildroot:
 
 ```sh
 ./scripts/feeds update -a
@@ -244,35 +278,44 @@ make defconfig
 make package/luci-app-nanopi-control/compile V=s
 ```
 
-The resulting APKs are located below `bin/packages/`. The included GitHub
-Actions workflow uses the official
-[`openwrt/gh-action-sdk`](https://github.com/openwrt/gh-action-sdk) action for
-`aarch64_generic-25.12.5`.
+Готовые APK находятся в `bin/packages/`. Workflow GitHub Actions использует
+официальный [`openwrt/gh-action-sdk`](https://github.com/openwrt/gh-action-sdk)
+для архитектуры `aarch64_generic-25.12.5` и публикует APK вместе с
+`SHA256SUMS`.
 
-## Development installation
+## Установка для разработки
 
-For an unpackaged test deployment, copy `root/*` to `/` and `htdocs/*` to
-`/www`, set executable permissions on scripts, then run:
+Для проверки без сборки пакета скопируйте содержимое `root/` в `/`, а
+содержимое `htdocs/` — в `/www`. Назначьте shell-обработчикам права `0755`,
+остальным файлам — `0644`, затем выполните:
 
 ```sh
 /etc/init.d/nanopi-control enable
 /etc/init.d/nanopi-control start
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+rm -rf /tmp/luci-modulecache
 /etc/init.d/rpcd restart
-rm -f /tmp/luci-indexcache
 /etc/init.d/uhttpd restart
 ```
 
-## Tests
+Новые файлы рекомендуется сначала загружать в `/tmp`, проверять через `sh -n`,
+`node --check` и `jsonfilter`, создавать резервную копию и только после этого
+заменять рабочую версию.
 
-Run the fixture-based SD/eMMC detector test on OpenWrt:
+## Тесты
+
+Проверка определения SD/eMMC запускается в OpenWrt:
 
 ```sh
 tests/test-detect-storage.sh ./root/usr/libexec/nanopi-control/detect-storage
 ```
 
-The test covers SD boot, normal eMMC boot and the post-copy eMMC expansion
-state.
+Проверка преобразования русского PO-файла:
 
-## License
+```sh
+python3 tests/test_po2lmo.py
+```
+
+## Лицензия
 
 MIT

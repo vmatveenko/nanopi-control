@@ -130,7 +130,7 @@ return view.extend({
 
 	performAction: function(action) {
 		const view = this;
-		if (action !== 'stop' || !view.routingToggle.checked)
+		if (action !== 'stop' || !view.routingActive)
 			return view.runContainerAction(action);
 
 		ui.showModal('Остановить 3x-ui?', [
@@ -161,15 +161,25 @@ return view.extend({
 		};
 	},
 
-	saveSettings: function(showModal) {
+	saveSettings: function(showModal, section) {
 		const view = this;
 		const values = view.settingsPayload();
+		if (section === 'routing')
+			values.token = '';
 		if (showModal !== false)
-			ui.showModal('Настройки 3x-ui', [ E('p', { 'class': 'spinning' }, view.routingToggle.checked ? 'Сохранение и применение…' : 'Сохранение…') ]);
-		return callXuiSettingsSave(values.token, values.exclude4, values.exclude6, values.block_ipv6).then(function(result) {
+			ui.showModal('Настройки 3x-ui', [ E('p', { 'class': 'spinning' }, view.routingActive ? 'Сохранение и применение…' : 'Сохранение…') ]);
+		const current = section === 'token' ? callXuiSettings() : Promise.resolve(null);
+		return current.then(function(saved) {
+			if (saved) {
+				values.exclude4 = saved.exclude4 || '';
+				values.exclude6 = saved.exclude6 || '';
+				values.block_ipv6 = !!saved.block_ipv6;
+			}
+			return callXuiSettingsSave(values.token, values.exclude4, values.exclude6, values.block_ipv6);
+		}).then(function(result) {
 			operationError(result, 'Не удалось сохранить настройки');
-			view.tokenInput.value = '';
 			if (values.token) {
+				view.tokenInput.value = '';
 				view.tokenStatus.textContent = 'Токен настроен и проверен';
 				view.tokenInput.placeholder = 'Сохранённый токен не отображается';
 			}
@@ -205,31 +215,42 @@ return view.extend({
 
 	setRouting: function(enabled) {
 		const view = this;
-		view.routingToggle.disabled = true;
+		view.routingButton.disabled = true;
 		ui.showModal('Маршрутизация через 3x-ui', [
 			E('p', { 'class': 'spinning' }, enabled
 				? 'Проверка настроек, подготовка TUN и применение правил…'
 				: 'Отключение маркировки и policy routing…')
 		]);
-		const save = enabled ? view.saveSettings(false) : Promise.resolve();
+		const save = enabled ? view.saveSettings(false, 'routing') : Promise.resolve();
 		return save.then(function() {
 			return callXuiRoutingSet(enabled);
 		}).then(function(result) {
 			operationError(result, enabled ? 'Не удалось включить маршрутизацию' : 'Не удалось выключить маршрутизацию');
-			view.routingToggle.checked = enabled;
-			view.saveButton.textContent = enabled ? 'Сохранить и применить' : 'Сохранить';
+			view.routingActive = enabled;
+			view.routingButton.textContent = enabled ? 'Выключить маршрутизацию' : 'Включить маршрутизацию';
+			view.routingButton.className = enabled ? 'btn cbi-button-negative' : 'btn cbi-button-action';
+			view.routingState.textContent = enabled ? 'Включена' : 'Выключена';
+			view.routingState.style.color = enabled ? '#16803a' : '#667085';
+			view.routingSaveButton.textContent = enabled ? 'Сохранить и применить' : 'Сохранить';
 			ui.hideModal();
 			view.notifyResult(result);
 		}).catch(function(error) {
-			view.routingToggle.checked = !enabled;
 			ui.hideModal();
 			ui.addNotification(null, E('p', {}, error.message), 'error');
 		}).finally(function() {
-			view.routingToggle.disabled = enabled ? !view.containerRunning : false;
+			view.routingButton.disabled = !view.containerRunning && !view.routingActive;
 		});
 	},
 
-	renderSettings: function(settings, running) {
+	showTab: function(name) {
+		const view = this;
+		Object.keys(view.tabPanels).forEach(function(key) {
+			view.tabPanels[key].style.display = key === name ? '' : 'none';
+			view.tabItems[key].className = key === name ? 'cbi-tab' : 'cbi-tab-disabled';
+		});
+	},
+
+	renderTabs: function(settings, informationPanel, running) {
 		const view = this;
 		view.containerRunning = running;
 		view.tokenInput = E('input', {
@@ -267,30 +288,28 @@ return view.extend({
 			'type': 'checkbox'
 		});
 		view.blockIpv6Input.checked = !!settings.block_ipv6;
-		view.routingToggle = E('input', {
-			'class': 'cbi-input-checkbox',
-			'type': 'checkbox'
-		});
-		view.routingToggle.checked = !!settings.routing_active;
-		view.routingToggle.disabled = !running && !settings.routing_active;
-		view.routingToggle.addEventListener('change', function() {
-			const enabled = !!view.routingToggle.checked;
-			view.routingToggle.checked = !enabled;
-			view.setRouting(enabled);
-		});
-		view.saveButton = E('button', {
+		const tokenSaveButton = E('button', {
+			'class': 'btn cbi-button-positive',
+			'type': 'button'
+		}, 'Сохранить');
+		tokenSaveButton.addEventListener('click', ui.createHandlerFn(view, function() {
+			return view.saveSettings(true, 'token').catch(function() {});
+		}));
+		view.routingSaveButton = E('button', {
 			'class': 'btn cbi-button-positive',
 			'type': 'button'
 		}, settings.routing_active ? 'Сохранить и применить' : 'Сохранить');
-		view.saveButton.addEventListener('click', ui.createHandlerFn(view, function() {
-			return view.saveSettings(true).catch(function() {});
+		view.routingSaveButton.addEventListener('click', ui.createHandlerFn(view, function() {
+			return view.saveSettings(true, 'routing').catch(function() {});
 		}));
 
-		const rows = [
+		const tokenRows = [
 			[ 'API-токен', E('div', {}, [
 				E('div', { 'style': 'display:flex;gap:6px;align-items:center;max-width:620px' }, [ view.tokenInput, issueButton ]),
 				view.tokenStatus
-			]) ],
+			]) ]
+		];
+		const routingRows = [
 			[ 'Исключаемые IPv4-сети', E('div', {}, [
 				automaticNetworks(settings.automatic_exclude4),
 				view.exclude4Input
@@ -303,19 +322,45 @@ return view.extend({
 			[ 'Блокировать IPv6', E('label', { 'style': 'display:flex;gap:8px;align-items:center' }, [
 				view.blockIpv6Input,
 				E('span', {}, 'Запрещать внешний IPv6-трафик LAN, кроме исключений')
-			]) ],
-			[ 'Маршрутизация LAN через 3x-ui', E('label', { 'style': 'display:flex;gap:8px;align-items:center' }, [
-				view.routingToggle,
-				E('span', {}, settings.routing_active ? 'Включена' : 'Выключена')
 			]) ]
 		];
-
-		return E('div', { 'style': 'margin-top:22px' }, [
-			E('h3', {}, 'Настройки'),
-			E('p', {}, 'Пользовательские исключения сохраняются в OpenWrt. Автоматические сети вычисляются при каждом применении.'),
-			twoColumnTable('Параметр', rows),
-			E('div', { 'style': 'margin-top:12px' }, [ view.saveButton ])
+		const settingsPanel = E('div', {}, [
+			twoColumnTable('Параметр', tokenRows),
+			E('div', { 'style': 'margin-top:12px' }, [ tokenSaveButton ])
 		]);
+		const routingPanel = E('div', {}, [
+			E('p', {}, 'Пользовательские исключения сохраняются в OpenWrt. Автоматические сети вычисляются при каждом применении.'),
+			twoColumnTable('Параметр', routingRows),
+			E('div', { 'style': 'margin-top:12px' }, [ view.routingSaveButton ])
+		]);
+		view.tabPanels = {
+			information: informationPanel,
+			settings: settingsPanel,
+			routing: routingPanel
+		};
+		view.tabItems = {};
+		const tabDefinitions = [
+			[ 'information', 'Информация' ],
+			[ 'settings', 'Настройка' ],
+			[ 'routing', 'Маршрутизация' ]
+		];
+		const tabMenu = E('ul', { 'class': 'cbi-tabmenu' }, tabDefinitions.map(function(tab) {
+			const item = E('li', { 'class': 'cbi-tab-disabled' }, [
+				E('a', { 'href': '#' }, tab[1])
+			]);
+			item.firstElementChild.addEventListener('click', function(event) {
+				event.preventDefault();
+				view.showTab(tab[0]);
+			});
+			view.tabItems[tab[0]] = item;
+			return item;
+		}));
+		const tabs = E('div', { 'style': 'margin-top:18px' }, [
+			tabMenu,
+			E('div', { 'style': 'margin-top:12px' }, [ informationPanel, settingsPanel, routingPanel ])
+		]);
+		view.showTab('information');
+		return tabs;
 	},
 
 	render: function(data) {
@@ -331,17 +376,29 @@ return view.extend({
 		const stopButton = E('button', {
 			'class': 'btn cbi-button-action negative'
 		}, 'Остановить');
+		view.routingActive = !!settings.routing_active;
+		view.routingButton = E('button', {
+			'class': view.routingActive ? 'btn cbi-button-negative' : 'btn cbi-button-action'
+		}, view.routingActive ? 'Выключить маршрутизацию' : 'Включить маршрутизацию');
 		firstButton.disabled = !installed;
 		stopButton.disabled = !running;
+		view.routingButton.disabled = !running && !view.routingActive;
 		firstButton.addEventListener('click', ui.createHandlerFn(view, function() {
 			return view.performAction(running ? 'restart' : 'start');
 		}));
 		stopButton.addEventListener('click', ui.createHandlerFn(view, function() {
 			return view.performAction('stop');
 		}));
+		view.routingButton.addEventListener('click', ui.createHandlerFn(view, function() {
+			return view.setRouting(!view.routingActive);
+		}));
 		const stateColor = running ? '#16803a' : installed ? '#d97706' : '#b42318';
+		view.routingState = E('span', {
+			'style': 'color:' + (view.routingActive ? '#16803a' : '#667085')
+		}, view.routingActive ? 'Включена' : 'Выключена');
 		const rows = [
 			[ 'Состояние', E('span', { 'style': 'color:' + stateColor }, stateLabel(state.state)) ],
+			[ 'Маршрутизация', view.routingState ],
 			[ 'Версия 3x-ui', state.version || (running ? 'Не определена' : 'Недоступна, пока контейнер остановлен') ],
 			[ 'Образ', state.image || '—' ],
 			[ 'Идентификатор контейнера', state.container_id || '—' ],
@@ -353,24 +410,21 @@ return view.extend({
 			[ 'Каталог данных', state.data_path || '/opt/3x-ui' ],
 			[ 'Панель', installed ? E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer' }, url) : '—' ]
 		];
+		const informationContent = [ twoColumnTable('Информация', rows) ];
+		if (state.routing_degraded) {
+			informationContent.push(E('div', { 'class': 'alert-message warning', 'style': 'margin-top:16px' },
+				'Маршрутизация находится в fail-closed: xray0 или контейнер недоступен. Запустите 3x-ui либо выключите маршрутизацию.'));
+		}
+		const informationPanel = E('div', {}, informationContent);
 		const content = [
 			E('h2', { 'class': 'section-title' }, '3x-ui — Обзор'),
 			E('p', {}, 'Здесь отображается текущее состояние контейнера 3x-ui.'),
-			E('div', { 'style': 'display:flex;gap:6px;margin:12px 0 16px' }, [ firstButton, stopButton ]),
-			twoColumnTable('Информация', rows)
+			E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 16px' }, [ firstButton, stopButton, view.routingButton ])
 		];
-
-		if (state.routing_degraded) {
-			content.push(E('div', { 'class': 'alert-message warning', 'style': 'margin-top:16px' },
-				'Маршрутизация находится в fail-closed: xray0 или контейнер недоступен. Запустите 3x-ui либо выключите маршрутизацию.'));
-		}
 		if (installed) {
-			content.push(view.renderSettings(settings, running));
-			content.push(E('div', { 'class': 'alert-message warning', 'style': 'margin-top:16px' }, [
-				E('strong', {}, 'Внимание: '),
-				'смените стандартный пароль 3x-ui перед открытием панели во внешние сети.'
-			]));
+			content.push(view.renderTabs(settings, informationPanel, running));
 		} else {
+			content.push(informationPanel);
 			content.push(E('div', { 'class': 'alert-message warning', 'style': 'margin-top:16px' },
 				state.error || 'Контейнер 3x-ui не найден. Вернитесь на страницу «Обзор» и установите модуль.'));
 		}

@@ -415,14 +415,10 @@ return view.extend({
 		}
 
 		return E('div', { 'class': 'cbi-section' }, [
-			E('div', { 'style': 'display:grid;grid-template-columns:minmax(180px,1fr) 2fr;gap:10px;padding:9px 0' }, [
-				E('strong', {}, _('Installed version')),
-				E('span', {}, update.current_version || '-')
-			]),
-			E('div', { 'style': 'display:grid;grid-template-columns:minmax(180px,1fr) 2fr;gap:10px;padding:9px 0' }, [
-				E('strong', {}, _('Latest release')),
-				E('span', { 'style': 'color:%s;font-weight:%s'.format(color, available ? 'bold' : 'normal') }, update.latest_version || _('Not checked'))
-			]),
+			table([
+				[ _('Installed version'), update.current_version || '-' ],
+				[ _('Latest release'), E('span', { 'style': 'color:%s;font-weight:%s'.format(color, available ? 'bold' : 'normal') }, update.latest_version || _('Not checked')) ]
+			], [ 'Параметр', 'Значение' ]),
 			checking ? '' : E('p', { 'style': 'color:%s'.format(color) }, update.error || update.message || _('Updates have not been checked')),
 			progress,
 			update.error && update.log_path ? E('p', { 'style': 'color:#666' }, 'Журнал: ' + update.log_path) : '',
@@ -504,15 +500,6 @@ return view.extend({
 		const updateContainer = E('div');
 		updateContainer.appendChild(this.renderUpdate(update, updateContainer));
 		root.appendChild(updateContainer);
-
-		root.appendChild(E('div', { 'style': 'margin-top:16px' }, [
-			E('button', {
-				'class': 'btn cbi-button cbi-button-action',
-				'click': ui.createHandlerFn(this, function() {
-					return callStatus().then(function() { window.location.reload(); });
-				})
-			}, _('Refresh'))
-		]));
 
 		return root;
 	},
