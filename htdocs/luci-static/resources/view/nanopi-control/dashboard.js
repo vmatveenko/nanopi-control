@@ -74,8 +74,12 @@ const callModulesStatus = rpc.declare({
 const callModulesStart = rpc.declare({
 	object: 'nanopi-control',
 	method: 'modules_start',
-	params: [ 'module', 'action', 'confirmation' ],
+	params: [ 'module', 'action', 'confirmation', 'version' ],
 	expect: {}
+});
+
+const callModuleVersions = rpc.declare({
+	object: 'nanopi-control', method: 'module_versions', params: [ 'module' ], expect: {}
 });
 
 function formatBytes(bytes) {
@@ -216,9 +220,9 @@ return view.extend({
 		}, 1000);
 	},
 
-	startModuleAction: function(module, action, confirmation, container) {
+	startModuleAction: function(module, action, confirmation, container, version) {
 		const view = this;
-		return callModulesStart(module, action, confirmation || '').then(function(result) {
+		return callModulesStart(module, action, confirmation || '', version || '').then(function(result) {
 			if (!result.accepted)
 				throw new Error(result.error || 'Не удалось запустить операцию');
 			container.replaceChildren(moduleJobProgress({
@@ -234,6 +238,39 @@ return view.extend({
 				container.replaceChildren(view.renderModules(state, container));
 			});
 		});
+	},
+
+	renderModuleVersion: function(module, busy) {
+		if (module.id === 'docker') return '—';
+		if (module.installed) return E('span', { 'title': module.image || '' }, module.version || 'Не определена');
+		this.moduleVersionChoices = this.moduleVersionChoices || {};
+		this.moduleVersionRequests = this.moduleVersionRequests || {};
+		const choices = this.moduleVersionChoices;
+		const select = E('select', {
+			'class': 'cbi-input-select',
+			'aria-label': 'Версия ' + module.name,
+			'change': function() { choices[module.id] = select.value; }
+		}, [ E('option', { 'value': 'latest' }, 'latest (последняя)') ]);
+		select.disabled = busy || !module.can_install;
+		const hint = E('small', { 'style': 'display:block;color:#d97706;max-width:280px' });
+		const current = choices[module.id] || 'latest';
+		if (current !== 'latest') select.appendChild(E('option', { 'value': current }, current));
+		select.value = current;
+		if (!this.moduleVersionRequests[module.id])
+			this.moduleVersionRequests[module.id] = callModuleVersions(module.id).catch(function() {
+				return { error: 'Не удалось загрузить список версий. Доступна установка latest.' };
+			});
+		this.moduleVersionRequests[module.id].then(function(result) {
+			const selected = select.value;
+			const versions = [ 'latest' ].concat((result.versions || []).filter(function(v) { return v !== 'latest'; }));
+			if (versions.indexOf(selected) < 0) versions.push(selected);
+			select.replaceChildren.apply(select, versions.map(function(v) {
+				return E('option', { 'value': v }, v === 'latest' ? 'latest (последняя)' : v);
+			}));
+			select.value = selected;
+			hint.textContent = result.error || '';
+		});
+		return E('div', {}, [ select, hint ]);
 	},
 
 	renderModules: function(state, container) {
@@ -294,7 +331,7 @@ return view.extend({
 				if (module.can_install) {
 					action.addEventListener('click', ui.createHandlerFn(view, function() {
 						action.disabled = true;
-						return view.startModuleAction(module.id, 'install', '', container);
+						return view.startModuleAction(module.id, 'install', '', container, (view.moduleVersionChoices || {})[module.id] || 'latest');
 					}));
 				}
 			}
@@ -307,10 +344,10 @@ return view.extend({
 				E('div', { 'style': 'color:#d97706;margin-top:3px' }, module.blocked_reason)
 			]);
 
-			return [ module.name || module.id, status, dependencies, action ];
+			return [ module.name || module.id, view.renderModuleVersion(module, !!job.running), status, dependencies, action ];
 		});
 
-		return table(rows, [ 'Модуль', 'Состояние', 'Зависимости', 'Действие' ]);
+		return table(rows, [ 'Модуль', 'Версия', 'Состояние', 'Зависимости', 'Действие' ]);
 	},
 
 	pollSdExpansion: function(container) {

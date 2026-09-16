@@ -226,12 +226,30 @@ add_docker_module() {
 	json_close_object
 }
 
+add_module_version() {
+	local container="$1" installed="$2" version='' image=''
+	if [ "$installed" -eq 1 ]; then
+		image="$(docker container inspect -f '{{.Config.Image}}' "$container" 2>/dev/null)"
+		case "$container" in
+			3x-ui) version="$(timeout 3 docker exec "$container" /app/x-ui -v 2>/dev/null)" ;;
+			vaultwarden) version="$(timeout 3 docker exec "$container" /vaultwarden --version 2>/dev/null)" ;;
+			caddy) version="$(timeout 3 docker exec "$container" caddy version 2>/dev/null)" ;;
+		esac
+		version="$(printf '%s' "$version" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -n 1)"
+		[ -n "$version" ] || version="$(docker container inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$container" 2>/dev/null)"
+		case "$version" in ''|'<no value>') version="${image##*:}" ;; esac
+	fi
+	json_add_string version "$version"
+	json_add_string image "$image"
+}
+
 add_caddy_module() {
 	local installed="$1" running="$2" can_install="$3" can_remove="$4" reason="$5" docker_installed_state="$6"
 
 	json_add_object ""
 	json_add_string id caddy
 	json_add_string name Caddy
+	add_module_version caddy "$installed"
 	json_add_boolean installed "$installed"
 	json_add_boolean service_running "$running"
 	json_add_boolean service_enabled "$installed"
@@ -255,6 +273,7 @@ add_vaultwarden_module() {
 	json_add_object ""
 	json_add_string id vaultwarden
 	json_add_string name Vaultwarden
+	add_module_version vaultwarden "$installed"
 	json_add_boolean installed "$installed"
 	json_add_boolean service_running "$running"
 	json_add_boolean service_enabled "$installed"
@@ -278,6 +297,7 @@ add_xui_module() {
 	json_add_object ""
 	json_add_string id 3x-ui
 	json_add_string name 3x-ui
+	add_module_version 3x-ui "$installed"
 	json_add_boolean installed "$installed"
 	json_add_boolean service_running "$running"
 	json_add_boolean service_enabled "$installed"
@@ -433,7 +453,14 @@ status() {
 }
 
 start_job() {
-	local module="$1" action="$2" confirmation="$3" free
+	local module="$1" action="$2" confirmation="$3" version="${4:-latest}" free
+
+	if [ "$action" = install ] && [ "$module" != docker ]; then
+		/usr/libexec/nanopi-control/module-images resolve "$module" "$version" >/dev/null || {
+			printf '%s\n' '{ "accepted": false, "error": "Недопустимая версия образа" }'
+			exit 1
+		}
+	fi
 
 	if [ -d "$LOCK_DIR" ]; then
 		printf '%s\n' '{ "accepted": false, "error": "Операция с модулями уже выполняется" }'
@@ -545,7 +572,7 @@ start_job() {
 		printf '%s\n' '{ "accepted": false, "error": "Не удалось заблокировать операцию" }'
 		exit 1
 	fi
-	if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -- "$module" "$action"; then
+	if ! start-stop-daemon -S -b -m -p "$PID_FILE" -x "$WORKER" -- "$module" "$action" "$version"; then
 		rmdir "$LOCK_DIR" 2>/dev/null || true
 		printf '%s\n' '{ "accepted": false, "error": "Не удалось запустить операцию" }'
 		exit 1
@@ -556,7 +583,7 @@ start_job() {
 case "$1" in
 	status) status ;;
 	sync-menu) sync_xui_marker; sync_vaultwarden_marker; sync_caddy_marker ;;
-	start) start_job "$2" "$3" "$4" ;;
+	start) start_job "$2" "$3" "$4" "$5" ;;
 	*)
 		printf '%s\n' '{ "error": "Неизвестная команда управления модулями" }'
 		exit 1

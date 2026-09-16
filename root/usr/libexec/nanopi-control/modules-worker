@@ -2,6 +2,7 @@
 
 MODULE="${1:-}"
 ACTION="${2:-}"
+IMAGE_VERSION="${3:-latest}"
 RUNTIME_DIR="/tmp/nanopi-control"
 STATE_FILE="$RUNTIME_DIR/modules.json"
 PID_FILE="$RUNTIME_DIR/modules.pid"
@@ -171,6 +172,7 @@ refresh_luci_menu() {
 
 remove_xui_data() {
 	rm -rf "$XUI_DATA_DIR"
+	rm -f /etc/nanopi-control/cert-domain /tmp/nanopi-control/cert/request /tmp/nanopi-control/cert/state.json
 }
 
 remove_vaultwarden_data() {
@@ -314,7 +316,7 @@ install_caddy() {
 	CADDY_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа Caddy" ""
-	run_with_heartbeat downloading 25 "Загрузка образа Caddy" docker image pull "$CADDY_IMAGE" || fail "Не удалось загрузить образ Caddy"
+	run_with_heartbeat downloading 25 "Загрузка образа Caddy" docker image pull --platform linux/arm64 "$CADDY_IMAGE" || fail "Не удалось загрузить образ Caddy"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера Caddy" ""
 	docker run -d \
@@ -376,7 +378,7 @@ install_vaultwarden() {
 	VAULTWARDEN_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа Vaultwarden" ""
-	run_with_heartbeat downloading 25 "Загрузка образа Vaultwarden" docker image pull "$VAULTWARDEN_IMAGE" || fail "Не удалось загрузить образ Vaultwarden"
+	run_with_heartbeat downloading 25 "Загрузка образа Vaultwarden" docker image pull --platform linux/arm64 "$VAULTWARDEN_IMAGE" || fail "Не удалось загрузить образ Vaultwarden"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера Vaultwarden" ""
 	docker run -d \
@@ -438,7 +440,7 @@ install_xui() {
 	XUI_CREATED=1
 
 	write_state downloading 25 1 0 "Загрузка образа 3x-ui" ""
-	run_with_heartbeat downloading 25 "Загрузка образа 3x-ui" docker image pull "$XUI_IMAGE" || fail "Не удалось загрузить образ 3x-ui"
+	run_with_heartbeat downloading 25 "Загрузка образа 3x-ui" docker image pull --platform linux/arm64 "$XUI_IMAGE" || fail "Не удалось загрузить образ 3x-ui"
 
 	write_state starting 75 1 0 "Создание и запуск контейнера 3x-ui" ""
 	docker run -d \
@@ -492,6 +494,28 @@ remove_xui() {
 	refresh_luci_menu
 	write_state complete 100 0 1 "3x-ui и все его настройки полностью удалены" ""
 }
+
+if [ "$ACTION" = install ] && [ "$MODULE" != docker ]; then
+	SELECTED_IMAGE="$(/usr/libexec/nanopi-control/module-images resolve "$MODULE" "$IMAGE_VERSION")" || fail "Недопустимая версия образа"
+	case "$MODULE" in
+		3x-ui) XUI_IMAGE="$SELECTED_IMAGE" ;;
+		vaultwarden) VAULTWARDEN_IMAGE="$SELECTED_IMAGE" ;;
+		caddy) CADDY_IMAGE="$SELECTED_IMAGE" ;;
+	esac
+elif [ "$ACTION" = remove ]; then
+	case "$MODULE" in
+		3x-ui|docker)
+			mkdir -p /tmp/nanopi-control/cert
+			exec 8>/tmp/nanopi-control/cert/start.lock
+			flock -n 8 || fail "Выпуск сертификата запускается; дождитесь завершения"
+			/etc/init.d/nanopi-cert running >/dev/null 2>&1 && fail "Дождитесь завершения выпуска сертификата"
+			/usr/libexec/nanopi-control/cert-control cleanup-idle || fail "Не удалось завершить восстановление сертификата"
+			;;
+	esac
+	XUI_IMAGE="$(docker container inspect -f '{{.Config.Image}}' "$XUI_CONTAINER" 2>/dev/null)"
+	VAULTWARDEN_IMAGE="$(docker container inspect -f '{{.Config.Image}}' "$VAULTWARDEN_CONTAINER" 2>/dev/null)"
+	CADDY_IMAGE="$(docker container inspect -f '{{.Config.Image}}' "$CADDY_CONTAINER" 2>/dev/null)"
+fi
 
 case "$MODULE:$ACTION" in
 	docker:install) install_docker ;;

@@ -9,6 +9,11 @@ const callXuiStatus = rpc.declare({
 	expect: {}
 });
 
+const callXuiInbounds = rpc.declare({ object: 'nanopi-control', method: 'xui_inbounds', expect: {} });
+const callXuiInboundsAction = rpc.declare({ object: 'nanopi-control', method: 'xui_inbounds_action', params: [ 'request' ], expect: {} });
+const callCertStatus = rpc.declare({ object: 'nanopi-control', method: 'xui_cert_status', expect: {} });
+const callCertStart = rpc.declare({ object: 'nanopi-control', method: 'xui_cert_start', params: [ 'domain' ], expect: {} });
+
 const callXuiSettings = rpc.declare({
 	object: 'nanopi-control',
 	method: 'xui_settings',
@@ -73,12 +78,12 @@ function formatDate(value) {
 	return isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function panelUrl(port, path) {
+function panelUrl(port, path, scheme, domain) {
 	if (!port) return '';
-	let host = window.location.hostname;
+	let host = scheme === 'https' && domain ? domain : window.location.hostname;
 	if (host.indexOf(':') >= 0 && host.charAt(0) !== '[')
 		host = '[' + host + ']';
-	return 'http://' + host + ':' + port + (path || '/');
+	return (scheme === 'https' ? 'https' : 'http') + '://' + host + ':' + port + (path || '/');
 }
 
 function twoColumnTable(title, rows) {
@@ -112,7 +117,7 @@ function operationError(result, fallback) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([ callXuiStatus(), callXuiSettings() ]);
+		return Promise.all([ callXuiStatus(), callXuiSettings(), callCertStatus() ]);
 	},
 
 	notifyResult: function(result) {
@@ -228,7 +233,7 @@ return view.extend({
 				view.wanInput.checked = !!result.panel_wan;
 				view.savedPanel = view.panelSnapshot();
 				view.tokenSaved('Токен настроен и проверен');
-				const url = panelUrl(result.panel_port, result.panel_path);
+				const url = panelUrl(result.panel_port, result.panel_path, result.panel_scheme, result.panel_domain);
 				view.panelLink.href = url;
 				view.panelLink.textContent = url;
 			}
@@ -356,6 +361,168 @@ return view.extend({
 			view.tabItems[key].className = key === name ? 'cbi-tab' : 'cbi-tab-disabled';
 		});
 		if (name === 'settings') view.styleTokenButtons();
+		if (name === 'inbounds') view.refreshInbounds();
+	},
+
+	refreshInbounds: function() {
+		const view = this;
+		if (view.inboundsBusy) return Promise.resolve();
+		view.inboundsBusy = true;
+		view.inboundsPanel.replaceChildren(E('p', { 'class': 'spinning' }, 'Получение входящих и правил firewall…'));
+		return callXuiInbounds().then(function(result) {
+			operationError(result, 'Не удалось получить входящие');
+			view.inboundsSnapshot = result.snapshot;
+			view.renderInbounds(result);
+		}).catch(function(error) {
+			view.inboundsSnapshot = null;
+			view.inboundsPanel.replaceChildren(
+				E('p', { 'class': 'alert-message warning' }, error.message),
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(view, function() { return view.refreshInbounds(); }) }, 'Повторить'));
+		}).finally(function() { view.inboundsBusy = false; });
+	},
+
+	inboundAction: function(action, row) {
+		const view = this;
+		if (view.inboundsBusy || !view.inboundsSnapshot) return;
+		const labels = { open: 'Открыть', close: 'Закрыть', fix: 'Исправить', delete: 'Удалить' };
+		const snapshot = view.inboundsSnapshot;
+		ui.showModal(labels[action] + ' правило?', [
+			E('p', {}, (row.remark || row.tag) + ': ' + row.port + '/' + row.transport.toUpperCase()),
+			E('p', {}, action === 'open' || action === 'fix'
+				? 'Будет разрешён входящий трафик из WAN на этот порт роутера по IPv4 и IPv6. При исправлении прежние правила этой привязки будут заменены.'
+				: 'Будут удалены только правила этой привязки. Другие правила могут продолжать разрешать доступ к порту.'),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'), ' ',
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(view, function() {
+					if (view.inboundsBusy) return;
+					view.inboundsBusy = true;
+					ui.showModal('Правила входящих', [ E('p', { 'class': 'spinning' }, 'Применение firewall…') ]);
+					return callXuiInboundsAction(JSON.stringify({ action: action, tag: row.tag, transport: row.transport,
+						section: row.section || '', snapshot: snapshot })).then(function(result) {
+						operationError(result, 'Не удалось изменить правило');
+						view.notifyResult(result);
+					}).catch(function(error) {
+						ui.addNotification(null, E('p', {}, error.message), 'error');
+					}).finally(function() {
+						ui.hideModal(); view.inboundsBusy = false; return view.refreshInbounds();
+					});
+				}) }, labels[action])
+			])
+		]);
+	},
+
+	renderInbounds: function(result) {
+		const view = this;
+		const labels = { closed: 'Закрыт', open: 'Открыт', stale: 'Требует исправления',
+			external: 'Открыт другим правилом', limited: 'Есть ограничения / частичный доступ' };
+		const actions = { open: 'Открыть', close: 'Закрыть', fix: 'Исправить', delete: 'Удалить' };
+		const table = function(headers, rows, empty) {
+			return E('table', { 'class': 'table' }, [
+				E('tr', { 'class': 'tr table-titles' }, headers.map(h => E('th', { 'class': 'th', 'style': 'white-space:nowrap' }, h)))
+			].concat(rows.length ? rows : [ E('tr', { 'class': 'tr' }, E('td', { 'class': 'td', 'colspan': headers.length }, empty)) ]));
+		};
+		const button = (action, row) => E('button', { 'class': 'btn ' + (action === 'open' ? 'cbi-button-positive' : 'cbi-button-neutral'),
+			'click': ui.createHandlerFn(view, function() { return view.inboundAction(action, row); }) }, actions[action]);
+		const actionLink = (action, row) => E('a', { 'href': '#',
+			'click': ui.createHandlerFn(view, function(event) {
+				event.preventDefault();
+				return view.inboundAction(action, row);
+			}) }, actions[action]);
+		const rules = list => (list || []).map(r => r.name + (r.port ? ' (' + r.port + '/' + r.transport + ')' : '') +
+			(r.family === 'ipv4' ? ' [IPv4]' : r.family === 'ipv6' ? ' [IPv6]' : '')).join('; ');
+		const compactCell = (content, style) => E('td', { 'class': 'td',
+			'style': 'white-space:nowrap;vertical-align:middle;' + (style || '') }, content);
+		const compactText = (text, width) => E('span', { 'title': text,
+			'style': 'display:block;max-width:' + width + 'px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, text);
+		view.inboundsPanel.replaceChildren(
+			E('p', {}, 'Разрешения firewall для входящих 3xUI. TCP и UDP управляются отдельно. Чужие правила доступны только для просмотра. Внешняя доступность сервиса отдельно не проверяется.'),
+			E('div', { 'style': 'overflow-x:auto' }, table([ 'Входящее', 'Тег', 'Протокол', 'Порт', 'Транспорт', 'Комментарий', 'Доступ из WAN', 'Действие' ], (result.rows || []).map(function(row) {
+				const color = row.state === 'open' || row.state === 'external' ? '#16803a' : row.state === 'closed' ? '' : '#b54708';
+				const comment = [ rules(row.rules), rules(row.other), !row.enabled ? 'Выключено в 3xUI' : '', row.warning ].filter(Boolean).join('; ');
+				return E('tr', { 'class': 'tr' }, [
+					compactCell(compactText(row.remark, 160)), compactCell(compactText(row.tag, 160)),
+					compactCell(row.protocol), compactCell(String(row.port || '—')),
+					compactCell(row.transport.toUpperCase()),
+					compactCell(compactText(comment || '—', 300), row.warning ? 'color:#b54708' : ''),
+					compactCell(labels[row.state], 'width:1%;color:' + color),
+					compactCell([ row.action ? actionLink(row.action, row) : '',
+						row.rules.length && row.action !== 'close' ? E('span', {}, [ row.action ? ' · ' : '', actionLink('close', row) ]) : '',
+						!row.action && !row.rules.length ? '—' : '' ], 'width:1%')
+				]);
+			}), 'Входящих с поддерживаемым портом нет. Создайте входящее в 3xUI и нажмите «Обновить».')),
+			E('div', { 'class': 'right', 'style': 'text-align:right;margin-top:8px;margin-bottom:16px' },
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(view, function() { return view.refreshInbounds(); }) }, 'Обновить')),
+			E('h3', {}, 'Правила без соответствующего входящего'),
+			table([ 'Правило / тег', 'Порт', 'Транспорт', 'Состояние', 'Действие' ], (result.orphans || []).map(row =>
+				E('tr', { 'class': 'tr' }, [ E('td', { 'class': 'td' }, [ E('div', {}, row.name), E('small', {}, row.tag) ]),
+					E('td', { 'class': 'td' }, row.port), E('td', { 'class': 'td' }, row.transport.toUpperCase()),
+					E('td', { 'class': 'td' }, row.enabled ? 'Включено' : 'Выключено'), E('td', { 'class': 'td' }, button('delete', row)) ])),
+				'Непривязанных правил нет.')
+		);
+	},
+
+	updateCertificate: function(data) {
+		this.certData = data;
+		if (this.certDomainValue) this.certDomainValue.textContent = data.domain || 'Не указан';
+		if (this.certExpiryValue) this.certExpiryValue.textContent = data.expires ? formatDate(data.expires) : 'Не выпущен';
+		if (this.panelLink && data.panel_port) {
+			const url = panelUrl(data.panel_port, data.panel_path, data.panel_scheme, data.panel_domain);
+			this.panelLink.href = url; this.panelLink.textContent = url;
+		}
+	},
+
+	showCertificateProgress: function() {
+		const view = this;
+		const generation = view.certPollGeneration = (view.certPollGeneration || 0) + 1;
+		const message = E('p', {}, 'Получение состояния…');
+		const bar = E('div', { 'style': 'height:100%;width:0%;background:#0066cc;transition:width .3s' });
+		const number = E('p', {}, '0%');
+		const close = E('button', { 'class': 'btn', 'click': function() {
+			view.certPollGeneration++; ui.hideModal();
+		} }, 'Закрыть');
+		ui.showModal('Выпуск сертификата', [ message,
+			E('div', { 'style': 'height:12px;background:#eee;overflow:hidden' }, bar), number,
+			E('div', { 'class': 'right' }, close) ]);
+		const poll = function() {
+			return callCertStatus().then(function(data) {
+				if (view.certPollGeneration !== generation) return;
+				operationError(data, 'Не удалось получить состояние выпуска');
+				view.updateCertificate(data);
+				message.textContent = data.message || (data.running ? 'Выпуск выполняется…' : 'Операция завершена');
+				const percent = Math.max(0, Math.min(100, Number(data.percent) || 0));
+				bar.style.width = percent + '%'; number.textContent = percent + '%';
+				bar.style.background = data.phase === 'error' ? '#b42318' : '#0066cc';
+				if (data.running) window.setTimeout(poll, 2000);
+			}).catch(function(error) {
+				if (view.certPollGeneration === generation) message.textContent = error.message + '. Закройте окно и повторно нажмите «Выпустить сертификат», чтобы проверить состояние.';
+			});
+		};
+		return poll();
+	},
+
+	issueCertificate: function() {
+		const view = this;
+		return callCertStatus().then(function(data) {
+			operationError(data, 'Не удалось прочитать сертификат');
+			view.updateCertificate(data);
+			if (data.running) return view.showCertificateProgress();
+			const domain = E('input', { 'class': 'cbi-input-text', 'type': 'text', 'placeholder': 'vpn.example.com',
+				'aria-label': 'Домен сертификата', 'style': 'width:100%;box-sizing:border-box' });
+			domain.value = data.requested_domain || data.domain || '';
+			const error = E('p', { 'style': 'color:#b42318' });
+			const submit = E('button', { 'class': 'btn cbi-button-positive', 'click': function() {
+				if (submit.disabled) return;
+				submit.disabled = true;
+				return callCertStart(domain.value.trim()).then(function(result) {
+					operationError(result, 'Не удалось запустить выпуск');
+					return view.showCertificateProgress();
+				}).catch(function(err) { error.textContent = err.message; submit.disabled = false; });
+			} }, 'Выпустить');
+			ui.showModal('Выпустить сертификат', [
+				E('p', {}, 'Укажите домен, направленный на роутер. Внешний TCP/80 должен доходить до NanoPi. После выпуска сертификат будет подключён к HTTPS панели 3xUI. Продление выполняется только повторным нажатием этой кнопки.'),
+				domain, error, E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': ui.hideModal }, 'Отмена'), ' ', submit ])
+			]);
+		}).catch(function(error) { ui.addNotification(null, E('p', {}, error.message), 'error'); });
 	},
 
 	renderTabs: function(settings, informationPanel, running) {
@@ -439,11 +606,18 @@ return view.extend({
 		});
 		view.updateSaveButtons();
 
+		view.certDomainValue = E('span', {}, (view.certData && view.certData.domain) || 'Не указан');
+		view.certExpiryValue = E('span', {}, view.certData && view.certData.expires ? formatDate(view.certData.expires) : 'Не выпущен');
 		const tokenRows = [
 			[ 'API-токен', E('div', {}, [
 				E('div', { 'style': 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;max-width:760px' }, [ view.tokenInput, view.issueButton, view.resetPasswordButton ]),
 				view.tokenStatus
 			]) ],
+			[ 'Домен сертификата', view.certDomainValue ],
+			[ 'Сертификат действителен до', view.certExpiryValue ],
+			[ 'Сертификат', E('a', { 'href': '#', 'click': ui.createHandlerFn(view, function(event) {
+				event.preventDefault(); return view.issueCertificate();
+			}) }, 'Выпустить сертификат') ],
 			[ 'Порт панели', view.portInput ],
 			[ 'URL-путь', view.pathInput ],
 			[ 'Доступ из интернета', E('label', { 'style': 'display:flex;gap:8px;align-items:center' }, [
@@ -475,16 +649,19 @@ return view.extend({
 			twoColumnTable('Параметр', routingRows),
 			E('div', { 'class': 'right', 'style': 'margin-top:12px;text-align:right' }, [ view.routingSaveButton ])
 		]);
+		view.inboundsPanel = E('div', {});
 		view.tabPanels = {
 			information: informationPanel,
 			settings: settingsPanel,
-			routing: routingPanel
+			routing: routingPanel,
+			inbounds: view.inboundsPanel
 		};
 		view.tabItems = {};
 		const tabDefinitions = [
 			[ 'information', 'Информация' ],
 			[ 'settings', 'Настройка' ],
-			[ 'routing', 'Маршрутизация' ]
+			[ 'routing', 'Маршрутизация' ],
+			[ 'inbounds', 'Входящие' ]
 		];
 		const tabMenu = E('ul', { 'class': 'cbi-tabmenu' }, tabDefinitions.map(function(tab) {
 			const item = E('li', { 'class': 'cbi-tab-disabled' }, [
@@ -499,7 +676,7 @@ return view.extend({
 		}));
 		const tabs = E('div', { 'style': 'margin-top:18px' }, [
 			tabMenu,
-			E('div', { 'style': 'margin-top:12px' }, [ informationPanel, settingsPanel, routingPanel ])
+			E('div', { 'style': 'margin-top:12px' }, [ informationPanel, settingsPanel, routingPanel, view.inboundsPanel ])
 		]);
 		view.showTab('information');
 		return tabs;
@@ -509,9 +686,10 @@ return view.extend({
 		const view = this;
 		const state = data[0] || {};
 		const settings = data[1] || {};
+		view.certData = data[2] || {};
 		const installed = !!state.installed;
 		const running = !!state.running;
-		const url = panelUrl(state.panel_settings_known ? state.panel_port : '', state.panel_path);
+		const url = panelUrl(state.panel_settings_known ? state.panel_port : '', state.panel_path, state.panel_scheme, state.panel_domain);
 		view.panelLink = E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer' }, url);
 		const firstButton = E('button', {
 			'class': 'btn cbi-button-action neutral'

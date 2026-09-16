@@ -1,0 +1,247 @@
+#!/bin/sh
+# Manual issuance only. No ACME cron, renewal schedule or DNS provider credentials.
+NANOPI_XUI_LIBRARY=1
+. /usr/libexec/nanopi-control/3xui-control
+CERT_RUN=/tmp/nanopi-control/cert
+CERT_STORE=/opt/3x-ui/cert/wrtpilot
+ACME_HOME=/opt/3x-ui/acme-manual
+CERT_JOURNAL=/etc/nanopi-control/cert-transaction.json
+CERT_DOMAIN_FILE=/etc/nanopi-control/cert-domain
+CERT_SELF=/usr/libexec/nanopi-control/cert-control
+CERT_PORT=18080
+CERT_TABLE=nanopi_acme
+CERT_SET=nanopi_acme_ifaces
+CERT_COMMENT=nanopi-control-acme-input
+umask 077
+mkdir -p "$CERT_RUN" /etc/nanopi-control
+
+cert_valid_domain() {
+	[ "${#1}" -le 253 ] && printf '%s' "$1" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+}
+cert_state() {
+	json_init
+	json_add_string phase "$1"; json_add_int percent "$2"; json_add_string message "$3"
+	json_dump > "$CERT_RUN/state.tmp.$$" && mv "$CERT_RUN/state.tmp.$$" "$CERT_RUN/state.json"
+}
+cert_running() { /etc/init.d/nanopi-cert running >/dev/null 2>&1; }
+cert_cleanup_network() {
+	local handle pid failed=0
+	if nft list table inet "$CERT_TABLE" >/dev/null 2>&1; then
+		nft delete table inet "$CERT_TABLE" || failed=1
+	fi
+	for handle in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n '/comment "nanopi-control-acme-input"/s/.*# handle \([0-9]*\).*/\1/p'); do
+		nft delete rule inet fw4 input handle "$handle" || failed=1
+	done
+	if nft list set inet fw4 "$CERT_SET" >/dev/null 2>&1; then
+		nft delete set inet fw4 "$CERT_SET" || failed=1
+	fi
+	# Kill only our dedicated webroot server, never LuCI or a reused unrelated PID.
+	for pid in /proc/[0-9]*; do
+		[ -r "$pid/cmdline" ] || continue
+		if tr '\000' '\n' < "$pid/cmdline" | grep -Fxq "$CERT_RUN/www"; then
+			[ "$(cat "$pid/comm" 2>/dev/null)" = uhttpd ] && kill "${pid##*/}" 2>/dev/null || true
+		fi
+	done
+	[ "$failed" = 0 ] || return 1
+	! nft list table inet "$CERT_TABLE" >/dev/null 2>&1 || return 1
+	! nft list set inet fw4 "$CERT_SET" >/dev/null 2>&1 || return 1
+}
+cert_restore() {
+	local domain backup root oldcert oldkey oldlink token
+	[ -s "$CERT_JOURNAL" ] || return 0
+	take_lock
+	domain="$(jsonfilter -i "$CERT_JOURNAL" -e '@.domain')"
+	backup="$(jsonfilter -i "$CERT_JOURNAL" -e '@.backup')"
+	cert_valid_domain "$domain" || return 1
+	case "$backup" in /root/nanopi-cert-backup-*) ;; *) return 1 ;; esac
+	[ -f "$backup/panel-cert.txt" ] || return 1
+	root="$CERT_STORE/$domain"
+	oldlink="$(cat "$backup/current-link")"
+	if [ -n "$oldlink" ]; then
+		ln -s "$oldlink" "$root/current.rollback.$$" && mv -Tf "$root/current.rollback.$$" "$root/current" || return 1
+	else
+		[ ! -L "$root/current" ] || rm "$root/current" || return 1
+	fi
+	oldcert="$(sed -n 's/^cert: //p' "$backup/panel-cert.txt")"
+	oldkey="$(sed -n 's/^key: //p' "$backup/panel-cert.txt")"
+	docker exec 3x-ui /app/x-ui cert -webCert "$oldcert" -webCertKey "$oldkey" >/dev/null 2>&1 || return 1
+	docker kill --signal=HUP 3x-ui >/dev/null 2>&1 || return 1
+	sleep 2
+	load_panel_endpoint || return 1
+	token="$(read_token_file)"
+	wait_panel_endpoint "$token" || return 1
+	rm "$CERT_JOURNAL" || return 1
+	exec 9>&-
+}
+cert_cleanup_idle() {
+	cert_running && return 0
+	cert_cleanup_network && cert_restore
+}
+cert_info() {
+	local running=0 phase=idle percent=0 message='' domain='' expires='' actual=''
+	cert_running && running=1
+	if [ "$running" = 0 ]; then
+		cert_cleanup_idle || cert_state error 0 'Не удалось убрать временный доступ или восстановить панель. Повторите выпуск для восстановления'
+	fi
+	if [ -s "$CERT_RUN/state.json" ]; then
+		phase="$(jsonfilter -i "$CERT_RUN/state.json" -e '@.phase')"
+		percent="$(jsonfilter -i "$CERT_RUN/state.json" -e '@.percent')"
+		message="$(jsonfilter -i "$CERT_RUN/state.json" -e '@.message')"
+	fi
+	if [ "$running" = 0 ] && [ "$phase" = running ]; then
+		phase=error; message='Операция прервана. Временный доступ очищен; можно повторить выпуск'
+	fi
+	[ ! -f "$CERT_DOMAIN_FILE" ] || domain="$(cat "$CERT_DOMAIN_FILE")"
+	if load_panel_endpoint && [ "$PANEL_SCHEME" = https ]; then
+		actual="$PANEL_DOMAIN"
+		expires="$(openssl x509 -in "$PANEL_TRUST_FILE" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')"
+	fi
+	json_init; json_add_boolean accepted 1; json_add_boolean running "$running"
+	json_add_string phase "$phase"; json_add_int percent "${percent:-0}"; json_add_string message "$message"
+	json_add_string domain "${actual:-$domain}"; json_add_string requested_domain "$domain"; json_add_string expires "$expires"
+	json_add_string panel_scheme "$PANEL_SCHEME"; json_add_string panel_domain "$PANEL_DOMAIN"
+	json_add_string panel_port "$PANEL_PORT"; json_add_string panel_path "$PANEL_PATH"
+	json_dump
+}
+cert_start() {
+	local domain
+	domain="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+	cert_valid_domain "$domain" || { json_result 0 '' 'Укажите доменное имя без https://, порта, пути и *' ''; return; }
+	exec 8>"$CERT_RUN/start.lock"
+	flock -n 8 || { json_result 0 '' 'Выпуск уже запускается' ''; return; }
+	[ ! -d /tmp/nanopi-control/modules.lock ] || { json_result 0 '' 'Дождитесь завершения операции с модулями' ''; return; }
+	cert_running && { json_result 0 '' 'Выпуск уже выполняется. Дождитесь результата' ''; return; }
+	cert_cleanup_idle || { json_result 0 '' 'Не удалось очистить предыдущую попытку. Временный доступ не добавлен' ''; return; }
+	printf '%s\n' "$domain" > "$CERT_RUN/request"
+	printf '%s\n' "$domain" > "$CERT_DOMAIN_FILE"
+	cert_state running 0 'Подготовка выпуска сертификата'
+	if /etc/init.d/nanopi-cert start; then
+		sleep 1
+		json_result 1 'Выпуск запущен' '' ''
+	else
+		cert_state error 0 'Не удалось запустить фоновую задачу'; json_result 0 '' 'Не удалось запустить фоновую задачу' ''
+	fi
+}
+cert_network() {
+	local device iface devices='' element
+	# Use actual WAN/WAN6 L3 interfaces; never match LAN ingress.
+	for iface in wan wan6; do
+		device="$(ubus call "network.interface.$iface" status 2>/dev/null | jsonfilter -e '@.l3_device')"
+		case "$device" in ''|*[!a-zA-Z0-9_.:-]*) continue ;; esac
+		case " $devices " in *" $device "*) ;; *) devices="$devices $device" ;; esac
+	done
+	[ -n "$devices" ] || return 1
+	panel_port_in_use "$CERT_PORT" && return 1
+	mkdir -p "$CERT_RUN/www/.well-known/acme-challenge"
+	# No aliases, scripts, directory listings, shared webroot or LuCI configuration.
+	uhttpd -f -p "0.0.0.0:$CERT_PORT" -p "[::]:$CERT_PORT" -h "$CERT_RUN/www" -c /dev/null -D -S -x /__disabled_cgi__ >"$CERT_RUN/http.log" 2>&1 &
+	sleep 1
+	panel_port_in_use "$CERT_PORT" || return 1
+	{
+		echo "add table inet $CERT_TABLE"
+		echo "add set inet $CERT_TABLE ingress { type ifname; flags timeout; timeout 600s; }"
+		echo "add set inet fw4 $CERT_SET { type ifname; flags timeout; timeout 600s; }"
+		for device in $devices; do
+			echo "add element inet $CERT_TABLE ingress { \"$device\" timeout 600s }"
+			echo "add element inet fw4 $CERT_SET { \"$device\" timeout 600s }"
+		done
+		echo "add chain inet $CERT_TABLE prerouting { type nat hook prerouting priority -101; policy accept; }"
+		echo "add rule inet $CERT_TABLE prerouting iifname @ingress tcp dport 80 redirect to :$CERT_PORT"
+		echo "insert rule inet fw4 input iifname @$CERT_SET tcp dport $CERT_PORT ct status dnat accept comment \"$CERT_COMMENT\""
+	} > "$CERT_RUN/rules.nft"
+	nft -c -f "$CERT_RUN/rules.nft" && nft -f "$CERT_RUN/rules.nft"
+}
+cert_validate_files() {
+	local dir="$1" domain="$2" certpub keypub
+	openssl x509 -in "$dir/fullchain.pem" -noout -checkhost "$domain" >/dev/null 2>&1 &&
+	openssl x509 -in "$dir/fullchain.pem" -noout -checkend 86400 >/dev/null 2>&1 &&
+	openssl pkey -in "$dir/privkey.pem" -check -noout >/dev/null 2>&1 || return 1
+	certpub="$(openssl x509 -in "$dir/fullchain.pem" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)"
+	keypub="$(openssl pkey -in "$dir/privkey.pem" -pubout -outform DER 2>/dev/null | sha256sum)"
+	[ "$certpub" = "$keypub" ] || return 1
+	openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt -untrusted "$dir/fullchain.pem" "$dir/fullchain.pem" >/dev/null 2>&1
+}
+cert_activate() {
+	local domain="$1" generation="$2" root backup token certpath keypath
+	root="$CERT_STORE/$domain"
+	[ ! -e "$root/current" ] || [ -L "$root/current" ] || return 1
+	take_lock
+	load_panel_endpoint || return 1
+	token="$(read_token_file)"; validate_token "$token" || return 1
+	backup="$(mktemp -d /root/nanopi-cert-backup-XXXXXX)" || return 1
+	docker exec 3x-ui /app/x-ui setting -getCert true > "$backup/panel-cert.txt" || return 1
+	readlink "$root/current" > "$backup/current-link" || :
+	json_init; json_add_string domain "$domain"; json_add_string backup "$backup"
+	json_dump > "$CERT_JOURNAL.tmp" && mv "$CERT_JOURNAL.tmp" "$CERT_JOURNAL" || return 1
+	ln -s "$generation" "$root/current.new.$$" && mv -Tf "$root/current.new.$$" "$root/current" || return 1
+	certpath="/root/cert/wrtpilot/$domain/current/fullchain.pem"
+	keypath="/root/cert/wrtpilot/$domain/current/privkey.pem"
+	docker exec 3x-ui /app/x-ui cert -webCert "$certpath" -webCertKey "$keypath" > "$CERT_RUN/apply.log" 2>&1 || return 1
+	docker kill --signal=HUP 3x-ui >/dev/null 2>&1 || return 1
+	sleep 2
+	load_panel_endpoint && [ "$PANEL_SCHEME" = https ] && [ "$PANEL_DOMAIN" = "$domain" ] && wait_panel_endpoint "$token" || return 1
+	rm "$CERT_JOURNAL" || return 1
+	exec 9>&-
+}
+cert_fail() { cert_state error 0 "$1"; exit 1; }
+cert_run() {
+	local domain="$1" generation dir token
+	cert_valid_domain "$domain" || cert_fail 'Некорректный домен'
+	[ ! -s "$CERT_JOURNAL" ] || cert_fail 'Сначала необходимо восстановить предыдущую попытку'
+	load_panel_endpoint && container_host_network || cert_fail 'Нужна работающая панель 3xUI с сетью host'
+	token="$(read_token_file)"; validate_token "$token" || cert_fail 'Проверьте API-токен панели'
+	[ -x /usr/lib/acme/client/acme.sh ] && command -v timeout >/dev/null && command -v openssl >/dev/null || cert_fail 'Не установлены зависимости выпуска сертификатов'
+	cert_state running 10 'Подготовка временного HTTP-доступа'
+	cert_cleanup_network && cert_network || cert_fail 'Не удалось подготовить временный доступ. Проверьте WAN и свободный порт 18080'
+	cert_state running 25 'Проверка домена и выпуск сертификата через внешний TCP/80'
+	mkdir -p "$ACME_HOME"
+	chmod 700 "$ACME_HOME"
+	# Never install acme.sh or its cron. The isolated home is not used by OpenWrt acme renew.
+	if ! timeout -k 10 480 /usr/lib/acme/client/acme.sh --issue --force --server letsencrypt \
+		--home "$ACME_HOME" --config-home "$ACME_HOME" --cert-home "$ACME_HOME" \
+		--keylength ec-256 -d "$domain" --webroot "$CERT_RUN/www" > "$CERT_RUN/acme.log" 2>&1; then
+		cert_fail 'Сертификат не выпущен. Проверьте A/AAAA-записи, доступность внешнего TCP/80 и ограничения Let’s Encrypt. Прежний сертификат сохранён'
+	fi
+	cert_state running 70 'Проверка полученного сертификата'
+	generation="issued-$(date +%Y%m%d-%H%M%S)-$$"
+	dir="$CERT_STORE/$domain/$generation"
+	mkdir -p "$dir" || cert_fail 'Не удалось создать каталог сертификата'
+	cp -p "$ACME_HOME/${domain}_ecc/fullchain.cer" "$dir/fullchain.pem" &&
+	cp -p "$ACME_HOME/${domain}_ecc/${domain}.key" "$dir/privkey.pem" && chmod 600 "$dir/privkey.pem" || cert_fail 'Не удалось сохранить сертификат'
+	cert_validate_files "$dir" "$domain" || cert_fail 'Полученный сертификат или ключ не прошли проверку'
+	cert_state running 85 'Подключение сертификата и проверка HTTPS панели'
+	cert_activate "$domain" "$generation" || cert_fail 'Не удалось включить HTTPS панели; выполняется восстановление прежних настроек'
+	cert_state running 95 'Удаление временного доступа'
+}
+cert_finish() {
+	local failed=0 phase
+	trap - EXIT HUP INT TERM
+	cert_cleanup_network || failed=1
+	cert_restore || failed=1
+	phase="$(jsonfilter -i "$CERT_RUN/state.json" -e '@.phase' 2>/dev/null)"
+	if [ "$failed" = 1 ]; then
+		cert_state error 0 'Не удалось завершить очистку или восстановление панели. Повторите выпуск; новые правила не добавятся до очистки'
+	elif [ "$phase" = running ]; then
+		if [ "$CERT_RESULT" = 0 ]; then cert_state done 100 'Сертификат выпущен и подключён к HTTPS панели. Временный доступ удалён';
+		else cert_state error 0 'Выпуск прерван или превышено время ожидания. Временный доступ удалён; можно повторить'; fi
+	fi
+}
+cert_supervise() {
+	local domain
+	domain="$(cat "$CERT_RUN/request")"
+	CERT_RESULT=1
+	trap 'cert_finish' EXIT
+	trap 'exit 1' HUP INT TERM
+	timeout -k 10 570 "$CERT_SELF" run "$domain" >> "$CERT_RUN/worker.log" 2>&1
+	CERT_RESULT=$?
+}
+
+case "$1" in
+	status) cert_info ;;
+	start) cert_start "$2" ;;
+	supervise) cert_supervise ;;
+	run) cert_run "$2" ;;
+	cleanup-idle) cert_cleanup_idle ;;
+	library) return 0 ;;
+	*) json_result 0 '' 'Неизвестная команда сертификатов' '' ;;
+esac

@@ -23,6 +23,7 @@ class Element {
     }
   }
   get firstElementChild() { return this.children.find(x => x instanceof Element); }
+  replaceChildren(...children) { this.children = children; }
   addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
   dispatch(name) { return Promise.all((this.listeners[name] || []).map(fn => fn({ preventDefault() {} }))); }
   focus() {}
@@ -107,5 +108,59 @@ const edit = async (input, value) => { input.value = value; await input.dispatch
   assert.equal(view.issueButton.style.color, view.issueButton.style.borderColor);
   assert.equal(view.resetPasswordButton.style.borderColor, view.issueButton.style.borderColor);
   assert.equal(view.tokenInput.style.height, view.issueButton.style.height);
+  const flat = element => element instanceof Element ? element.children.flatMap(flat) : [String(element)];
+  const buttons = element => element instanceof Element
+    ? [ ...(element.tagName === 'button' ? [element] : []), ...element.children.flatMap(buttons) ] : [];
+  const links = element => element instanceof Element
+    ? [ ...(element.tagName === 'a' ? [element] : []), ...element.children.flatMap(links) ] : [];
+  let inboundCalls = 0, actionCalls = 0, failInbounds = false;
+  const row = { tag: 'test', remark: 'VLESS', protocol: 'vless', port: 443, transport: 'tcp', enabled: true,
+    state: 'closed', rules: [], other: [], action: 'open' };
+  handlers.xui_inbounds = () => { inboundCalls++; return failInbounds
+    ? { accepted: false, error: 'Панель недоступна' }
+    : { accepted: true, snapshot: 'test-snapshot', rows: [row, {...row, tag:'shared', state:'external', action:''}],
+      orphans: [{tag:'gone',section:'orphan1',port:'444',transport:'udp',name:'3xUI: gone',enabled:true}] }; };
+  handlers.xui_inbounds_action = request => {
+    actionCalls++; const value=JSON.parse(request);
+    assert.equal(value.snapshot,'test-snapshot'); assert.equal(value.transport,'tcp');
+    row.state='open'; row.action='close'; return {accepted:true};
+  };
+  await view.refreshInbounds();
+  assert.equal(links(view.inboundsPanel).filter(b=>flat(b).join('')==='Открыть').length,1);
+  assert(flat(view.inboundsPanel).includes('Открыт другим правилом'));
+  assert(flat(view.inboundsPanel).includes('Правила без соответствующего входящего'));
+  assert.equal(buttons(view.inboundsPanel).filter(b=>flat(b).join('')==='Удалить').length,1);
+  await links(view.inboundsPanel).find(b=>flat(b).join('')==='Открыть').dispatch('click');
+  assert.equal(actionCalls,0,'confirmation before mutation');
+  await buttons(new Element('div',{},modal.children)).find(b=>flat(b).join('')==='Открыть').dispatch('click');
+  assert.equal(actionCalls,1); assert.equal(inboundCalls,2,'refresh after mutation');
+  assert(flat(view.inboundsPanel).includes('Закрыть'));
+  failInbounds=true; await view.refreshInbounds();
+  assert.equal(view.inboundsSnapshot,null);
+  assert(flat(view.inboundsPanel).includes('Панель недоступна'));
+  assert(!flat(view.inboundsPanel).includes('Удалить'),'no orphan actions on API failure');
+  let certStarts = 0;
+  const certState = { accepted:true, running:false, phase:'idle', domain:'vpn.example.com', expires:'',
+    panel_scheme:'http', panel_port:'4054', panel_path:'/private/' };
+  handlers.xui_cert_status = () => ({...certState});
+  handlers.xui_cert_start = domain => {
+    assert.equal(domain,'vpn.example.com'); certStarts++;
+    Object.assign(certState,{running:true,phase:'running',percent:25,message:'Проверка домена'});
+    return {accepted:true};
+  };
+  await view.issueCertificate();
+  assert.equal(certStarts,0,'opening certificate dialog never issues');
+  await buttons(new Element('div',{},modal.children)).find(b=>flat(b).join('')==='Выпустить').dispatch('click');
+  assert.equal(certStarts,1);
+  assert.equal(modal.children[1].children[0].style.width,'25%');
+  assert.equal(modal.children[2].textContent,'25%');
+  await view.issueCertificate();
+  assert.equal(certStarts,1,'running job is observed, not duplicated');
+  Object.assign(certState,{running:false,phase:'done',percent:100,expires:'Sep 20 10:00:00 2026 GMT',panel_scheme:'https',panel_domain:'vpn.example.com'});
+  view.updateCertificate(certState);
+  assert.equal(view.panelLink.href,'https://vpn.example.com:4054/private/');
+  assert.equal(view.certDomainValue.textContent,'vpn.example.com');
   console.log('PASS: visible disabled Save, dirty/revert behavior for all settings, automatic token actions, independent routing drafts, link update, errors, neutral colors');
+  console.log('PASS: inbound tables, shared permission, orphan delete, confirmation, refresh and API failure');
+  console.log('PASS: manual certificate dialog, single job, progress number/bar, certificate fields and HTTPS link');
 })().catch(error => { console.error(error); process.exitCode = 1; });

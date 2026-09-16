@@ -13,6 +13,9 @@ TOKEN_NAME="openwrt-api-token"
 PANEL_PORT=""
 PANEL_PATH="/"
 PANEL_KNOWN=0
+PANEL_SCHEME=http
+PANEL_DOMAIN=""
+PANEL_TRUST_FILE=/tmp/nanopi-control/xui-panel-ca.pem
 API_TIMEOUT=15
 PANEL_FIREWALL="nanopi_control_xui_panel"
 PANEL_FIREWALL_NAME="WrtPilot 3x-ui panel"
@@ -99,8 +102,9 @@ normalize_panel_path() {
 }
 
 load_panel_endpoint() {
-	local output port path
+	local output port path cert key tmp
 	PANEL_KNOWN=0
+	PANEL_SCHEME=http; PANEL_DOMAIN=""
 	container_running || return 1
 	output="$(docker exec "$CONTAINER" /app/x-ui setting -show true 2>/dev/null)" || return 1
 	port="$(printf '%s\n' "$output" | sed -n 's/^port: //p')"
@@ -109,6 +113,18 @@ load_panel_endpoint() {
 	path="$(normalize_panel_path "$path")" || return 1
 	PANEL_PORT="$port"
 	PANEL_PATH="$path"
+	output="$(docker exec "$CONTAINER" /app/x-ui setting -getCert true 2>/dev/null)" || return 1
+	cert="$(printf '%s\n' "$output" | sed -n 's/^cert: //p')"
+	key="$(printf '%s\n' "$output" | sed -n 's/^key: //p')"
+	if [ -n "$cert" ] && [ -n "$key" ]; then
+		PANEL_SCHEME=https
+		mkdir -p /tmp/nanopi-control
+		tmp="$PANEL_TRUST_FILE.$$"
+		docker exec "$CONTAINER" cat "$cert" >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+		PANEL_DOMAIN="$(openssl x509 -in "$tmp" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | sed -n 's/^[[:space:]]*DNS:\([A-Za-z0-9.-]*\)[[:space:]]*$/\1/p' | head -n 1)"
+		[ -n "$PANEL_DOMAIN" ] || { rm -f "$tmp"; return 1; }
+		mv -f "$tmp" "$PANEL_TRUST_FILE" || return 1
+	fi
 	PANEL_KNOWN=1
 }
 
@@ -245,6 +261,8 @@ save_panel_settings() {
 	json_add_boolean accepted 1
 	json_add_string panel_port "$PANEL_PORT"
 	json_add_string panel_path "$PANEL_PATH"
+	json_add_string panel_scheme "$PANEL_SCHEME"
+	json_add_string panel_domain "$PANEL_DOMAIN"
 	json_add_boolean panel_wan "$wan"
 	json_add_string message "Настройки панели сохранены"
 	json_dump
@@ -306,6 +324,8 @@ status() {
 	json_add_string fail2ban "${fail2ban:-false}"
 	json_add_string panel_port "$PANEL_PORT"
 	json_add_string panel_path "$PANEL_PATH"
+	json_add_string panel_scheme "$PANEL_SCHEME"
+	json_add_string panel_domain "$PANEL_DOMAIN"
 	json_add_boolean panel_settings_known "$PANEL_KNOWN"
 	json_add_string data_path /opt/3x-ui
 	json_add_boolean routing_active "$routing_active"
@@ -366,32 +386,23 @@ api_request() {
 	local method="$1" path="$2" token="$3" body="$4"
 	local response_file="/tmp/nanopi-control/xui-api-response.$$"
 	local error_file="/tmp/nanopi-control/xui-api-error.$$"
-	local url="http://127.0.0.1:${PANEL_PORT}${PANEL_PATH}${path#/}" rc
+	local url="$PANEL_SCHEME://${PANEL_DOMAIN:-127.0.0.1}:${PANEL_PORT}${PANEL_PATH}${path#/}" rc code
 
 	API_RESPONSE=""
 	API_AUTH_FAILED=0
 	[ "$PANEL_KNOWN" = 1 ] || { LAST_ERROR="Не удалось определить адрес панели"; return 1; }
 	rm -f "$response_file" "$error_file"
-	if [ "$method" = "GET" ]; then
-		uclient-fetch -O "$response_file" --timeout="$API_TIMEOUT" --no-proxy \
-			--header="Authorization: Bearer $token" \
-			--header="Accept: application/json" \
-			--header="X-Requested-With: XMLHttpRequest" \
-			"$url" 2>"$error_file"
-		rc=$?
-	else
-		uclient-fetch -O "$response_file" --timeout="$API_TIMEOUT" --no-proxy \
-			--method="$method" --body-data="$body" \
-			--header="Authorization: Bearer $token" \
-			--header="Accept: application/json" \
-			--header="Content-Type: application/json" \
-			--header="X-Requested-With: XMLHttpRequest" \
-			"$url" 2>"$error_file"
-		rc=$?
+	set -- --silent --show-error --fail --noproxy '*' --max-time "$API_TIMEOUT" \
+		-o "$response_file" -w '%{http_code}' -H "Authorization: Bearer $token" \
+		-H 'Accept: application/json' -H 'X-Requested-With: XMLHttpRequest'
+	if [ "$PANEL_SCHEME" = https ]; then
+		set -- "$@" --cacert "$PANEL_TRUST_FILE" --resolve "$PANEL_DOMAIN:$PANEL_PORT:127.0.0.1"
 	fi
+	[ "$method" = GET ] || set -- "$@" -X "$method" -H 'Content-Type: application/json' --data "$body"
+	code="$(curl "$@" "$url" 2>"$error_file")"; rc=$?
 	[ -f "$response_file" ] && API_RESPONSE="$(cat "$response_file")"
 	if [ "$rc" -ne 0 ]; then
-		if grep -Eq 'HTTP error (401|403)' "$error_file" 2>/dev/null; then
+		if [ "$code" = 401 ] || [ "$code" = 403 ]; then
 			API_AUTH_FAILED=1
 			LAST_ERROR="API-токен 3x-ui отклонён"
 		else
@@ -672,6 +683,8 @@ settings_status() {
 	json_add_string token_name "$TOKEN_NAME"
 	json_add_string panel_port "$PANEL_PORT"
 	json_add_string panel_path "$PANEL_PATH"
+	json_add_string panel_scheme "$PANEL_SCHEME"
+	json_add_string panel_domain "$PANEL_DOMAIN"
 	json_add_boolean panel_settings_known "$PANEL_KNOWN"
 	json_add_boolean panel_wan "$(panel_wan_enabled && echo 1 || echo 0)"
 	json_add_string exclude4 "$exclude4"
@@ -1089,11 +1102,64 @@ purge_settings() {
 	json_result 1 "Настройки и правила 3x-ui удалены" "" ""
 }
 
+inbounds_command() {
+	local mode="$1" request="$2" token result backup
+	take_lock
+	# Refuse to display uncommitted UCI rules as active firewall permissions.
+	[ -z "$(uci changes firewall)" ] || {
+		json_result 0 "" "Сначала сохраните или отмените другие изменения firewall" ""; return
+	}
+	if [ "$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER" 2>/dev/null)" != host ]; then
+		json_result 0 "" "Для входящих требуется запущенный контейнер с сетью host" ""; return
+	fi
+	token="$(read_token_file)"
+	if [ -z "$token" ] || ! validate_token "$token"; then
+		json_result 0 "" "Не удалось получить входящие 3xUI. Проверьте контейнер и API-токен в настройках" ""; return
+	fi
+	if [ "$mode" != status ]; then
+		[ -z "$(uci changes firewall)" ] || {
+			json_result 0 "" "Сначала сохраните или отмените другие изменения firewall" ""; return
+		}
+		backup="$(mktemp -d /root/wrtpilot-inbounds-firewall-XXXXXX)" || return 1
+		cp -p /etc/config/firewall "$backup/firewall" && cmp -s /etc/config/firewall "$backup/firewall" || {
+			json_result 0 "" "Не удалось сохранить резервную копию firewall" ""; return
+		}
+	fi
+	json_init
+	json_add_string panel "$API_RESPONSE"
+	[ -n "$request" ] || request='{}'
+	json_add_string request "$request"
+	result="$(json_dump | ucode /usr/libexec/nanopi-control/3xui-inbounds.uc "$mode")"
+	if [ "$mode" = status ]; then printf '%s\n' "$result"; return; fi
+	if [ "$(jsonfilter -s "$result" -e '@.accepted' 2>/dev/null)" != true ]; then
+		uci revert firewall
+		if [ -n "$result" ]; then printf '%s\n' "$result"; else json_result 0 "" "Ошибка обработки правил" ""; fi
+		return
+	fi
+	if ! cmp -s "$backup/firewall" /etc/config/firewall; then
+		uci revert firewall
+		json_result 0 "" "Конфигурация firewall изменена другим процессом. Обновите таблицы" ""; return
+	fi
+	if ! fw4 check >/dev/null 2>&1 || ! uci commit firewall || ! /etc/init.d/firewall reload >/dev/null 2>&1; then
+		uci revert firewall
+		if cp -p "$backup/firewall" /etc/config/firewall && /etc/init.d/firewall reload >/dev/null 2>&1; then
+			json_result 0 "" "Не удалось применить правила. Прежняя конфигурация восстановлена" ""
+		else
+			json_result 0 "" "Ошибка восстановления firewall. Резервная копия: $backup/firewall" ""
+		fi
+		return
+	fi
+	json_result 1 "Правила firewall обновлены. Резервная копия: $backup" "" ""
+}
+
+[ "${NANOPI_XUI_LIBRARY:-0}" = 1 ] && return 0
 load_panel_endpoint || true
 
 case "$1" in
 	status) status ;;
 	settings) settings_status ;;
+	inbounds) inbounds_command status ;;
+	inbounds-action) inbounds_command prepare "$2" ;;
 	save) save_settings "$2" "$3" "$4" "$5" ;;
 	save-panel) save_panel_settings "$2" "$3" "$4" "$5" ;;
 	issue-token) issue_token_command ;;

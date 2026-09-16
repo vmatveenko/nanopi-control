@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=98
+STOP=10
+
+start_service() {
+	[ -s /tmp/nanopi-control/cert/request ] || return 1
+	procd_open_instance
+	procd_set_param command /usr/libexec/nanopi-control/cert-control supervise
+	procd_set_param term_timeout 20
+	procd_close_instance
+}
+
+stop_service() {
+	/usr/libexec/nanopi-control/cert-control cleanup-idle >/dev/null 2>&1
+}

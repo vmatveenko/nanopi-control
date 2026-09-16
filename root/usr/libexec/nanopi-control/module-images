@@ -1,0 +1,80 @@
+#!/bin/sh
+
+# Fixed repositories only; callers can choose a stable tag, never a registry.
+image_ref() {
+	local module="$1" tag="${2:-latest}" repo
+	case "$module" in
+		3x-ui) repo=ghcr.io/mhsanaei/3x-ui ;;
+		vaultwarden) repo=vaultwarden/server ;;
+		caddy) repo=caddy; [ "$tag" != latest ] || tag=2-alpine ;;
+		*) return 1 ;;
+	esac
+	case "$module:$tag" in
+		3x-ui:latest|vaultwarden:latest|caddy:2-alpine) ;;
+		caddy:*) printf '%s\n' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-alpine$' || return 1 ;;
+		*) printf '%s\n' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1 ;;
+	esac
+	[ "${#tag}" -le 80 ] || return 1
+	printf '%s:%s\n' "$repo" "$tag"
+}
+
+fetch_tags() {
+	local module="$1" dir="$2" token page repo filter mode
+	if [ "$module" = 3x-ui ]; then
+		curl -fsS --connect-timeout 5 --max-time 10 'https://ghcr.io/token?service=ghcr.io&scope=repository:mhsanaei/3x-ui:pull' -o "$dir/token" || return 1
+		token="$(jsonfilter -i "$dir/token" -e '@.token')"
+		[ -n "$token" ] || return 1
+		curl -fsS --connect-timeout 5 --max-time 15 -H "Authorization: Bearer $token" 'https://ghcr.io/v2/mhsanaei/3x-ui/tags/list?n=1000' -o "$dir/page" || return 1
+		ucode /usr/libexec/nanopi-control/module-versions.uc ghcr "$dir/page" > "$dir/tags" || return 1
+	else
+		case "$module" in
+			caddy) repo=library/caddy; filter='&name=alpine'; mode=caddy ;;
+			vaultwarden) repo=vaultwarden/server; filter=''; mode=vaultwarden ;;
+			*) return 1 ;;
+		esac
+		for page in 1 2 3; do
+			curl -fsS --connect-timeout 5 --max-time 10 "https://hub.docker.com/v2/namespaces/${repo%/*}/repositories/${repo#*/}/tags?page_size=100&page=$page$filter" -o "$dir/page" || return 1
+			ucode /usr/libexec/nanopi-control/module-versions.uc "$mode" "$dir/page" >> "$dir/tags" || return 1
+			[ -n "$(jsonfilter -i "$dir/page" -e '@.next')" ] || break
+		done
+	fi
+	sort -Vr "$dir/tags" | uniq | head -n 60 > "$dir/sorted"
+	[ -s "$dir/sorted" ]
+}
+
+list_versions() (
+	local module="$1" cache dir now stamp=0 error='' tag
+	image_ref "$module" >/dev/null || exit 1
+	. /usr/share/libubox/jshn.sh
+	mkdir -p /tmp/nanopi-control
+	cache="/tmp/nanopi-control/versions-$module"
+	now="$(date +%s)"
+	[ ! -f "$cache" ] || stamp="$(stat -c %Y "$cache")"
+	if [ "$((now - stamp))" -ge 3600 ]; then
+		dir="$(mktemp -d /tmp/nanopi-control/versions.XXXXXX)" || exit 1
+		trap 'rm -rf "$dir"' EXIT
+		if timeout -k 1 25 "$0" fetch "$module" "$dir"; then
+			mv "$dir/sorted" "$cache"
+		else
+			error='Не удалось обновить список версий. Можно установить latest или выбрать версию из сохранённого списка.'
+		fi
+	fi
+	json_init
+	json_add_string error "$error"
+	json_add_array versions
+	json_add_string '' latest
+	if [ -f "$cache" ]; then
+		while IFS= read -r tag; do
+			image_ref "$module" "$tag" >/dev/null && json_add_string '' "$tag"
+		done < "$cache"
+	fi
+	json_close_array
+	json_dump
+)
+
+case "$1" in
+	resolve) image_ref "$2" "$3" ;;
+	list) list_versions "$2" ;;
+	fetch) fetch_tags "$2" "$3" ;;
+	*) exit 1 ;;
+esac
