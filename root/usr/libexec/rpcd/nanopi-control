@@ -2,7 +2,7 @@
 
 case "$1" in
 	list)
-		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "module_versions": { "module": "" }, "modules_start": { "module": "", "action": "", "confirmation": "", "version": "" }, "xui_status": {}, "xui_settings": {}, "xui_inbounds": {}, "xui_cert_status": {}, "xui_cert_start": { "domain": "" }, "xui_inbounds_action": { "request": "" }, "xui_settings_save": { "token": "", "exclude4": "", "exclude6": "", "block_ipv6": false }, "xui_panel_save": { "token": "", "port": "", "path": "", "wan": false }, "xui_token_issue": {}, "xui_password_reset": {}, "xui_routing_set": { "enabled": false }, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
+		printf '%s\n' '{ "status": {}, "migration_preflight": {}, "migration_status": {}, "migration_start": { "confirmation": "" }, "migration_confirm_boot": { "confirmation": "" }, "migration_expand": { "confirmation": "" }, "migration_erase": { "confirmation": "" }, "sd_expand_info": {}, "sd_expand_status": {}, "sd_expand_start": { "confirmation": "" }, "modules_status": {}, "module_versions": { "module": "" }, "modules_start": { "module": "", "action": "", "confirmation": "", "version": "" }, "xui_overview": {}, "xui_status": {}, "xui_settings": {}, "xui_inbounds": {}, "xui_cert_status": {}, "xui_cert_start": { "domain": "" }, "xui_inbounds_action": { "request": "" }, "xui_settings_save": { "token": "", "exclude4": "", "exclude6": "", "block_ipv6": false }, "xui_panel_save": { "token": "", "port": "", "path": "", "wan": false }, "xui_token_issue": {}, "xui_password_reset": {}, "xui_routing_set": { "enabled": false }, "xui_action": { "action": "" }, "vaultwarden_status": {}, "vaultwarden_action": { "action": "" }, "caddy_status": {}, "caddy_action": { "action": "" }, "update_check": {}, "update_status": {}, "update_start": {} }'
 		;;
 	call)
 		payload="$(cat)"
@@ -60,6 +60,9 @@ case "$1" in
 				esac
 				version="$(jsonfilter -s "$payload" -e '@.version' 2>/dev/null)"
 				exec /usr/libexec/nanopi-control/modules-control start "$module" "$action" "$confirmation" "$version"
+				;;
+			xui_overview)
+				exec /usr/libexec/nanopi-control/cert-control overview
 				;;
 			xui_status)
 				exec /usr/libexec/nanopi-control/3xui-control status

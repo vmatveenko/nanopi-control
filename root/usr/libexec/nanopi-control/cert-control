@@ -78,7 +78,7 @@ cert_cleanup_idle() {
 	cert_cleanup_network && cert_restore
 }
 cert_info() {
-	local running=0 phase=idle percent=0 message='' domain='' expires='' actual=''
+	local running=0 phase=idle percent=0 message='' domain='' expires='' actual='' certificate
 	cert_running && running=1
 	if [ "$running" = 0 ]; then
 		cert_cleanup_idle || cert_state error 0 'Не удалось убрать временный доступ или восстановить панель. Повторите выпуск для восстановления'
@@ -101,7 +101,14 @@ cert_info() {
 	json_add_string domain "${actual:-$domain}"; json_add_string requested_domain "$domain"; json_add_string expires "$expires"
 	json_add_string panel_scheme "$PANEL_SCHEME"; json_add_string panel_domain "$PANEL_DOMAIN"
 	json_add_string panel_port "$PANEL_PORT"; json_add_string panel_path "$PANEL_PATH"
-	json_dump
+	if [ "$1" = overview ]; then
+		# One request-local snapshot: cleanup and endpoint discovery above run once.
+		# Keep the standalone status command for certificate progress polling.
+		certificate="$(json_dump)"
+		printf '{"status":%s,"settings":%s,"certificate":%s}\n' "$(status)" "$(settings_status)" "$certificate"
+	else
+		json_dump
+	fi
 }
 cert_start() {
 	local domain
@@ -238,6 +245,7 @@ cert_supervise() {
 
 case "$1" in
 	status) cert_info ;;
+	overview) cert_info overview ;;
 	start) cert_start "$2" ;;
 	supervise) cert_supervise ;;
 	run) cert_run "$2" ;;

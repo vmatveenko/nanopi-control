@@ -3,11 +3,7 @@
 'require rpc';
 'require ui';
 
-const callXuiStatus = rpc.declare({
-	object: 'nanopi-control',
-	method: 'xui_status',
-	expect: {}
-});
+const callXuiOverview = rpc.declare({ object: 'nanopi-control', method: 'xui_overview', expect: {} });
 
 const callXuiInbounds = rpc.declare({ object: 'nanopi-control', method: 'xui_inbounds', expect: {} });
 const callXuiInboundsAction = rpc.declare({ object: 'nanopi-control', method: 'xui_inbounds_action', params: [ 'request' ], expect: {} });
@@ -117,7 +113,9 @@ function operationError(result, fallback) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([ callXuiStatus(), callXuiSettings(), callCertStatus() ]);
+		return callXuiOverview().then(function(data) {
+			return [ data.status, data.settings, data.certificate ];
+		});
 	},
 
 	notifyResult: function(result) {

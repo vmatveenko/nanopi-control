@@ -68,6 +68,14 @@ view.renderTabs(savedSettings, new Element('div'), true);
 const edit = async (input, value) => { input.value = value; await input.dispatch('input'); };
 
 (async () => {
+  const snapshot = { status: { running: true }, settings: savedSettings, certificate: { domain: 'example.test' } };
+  let overviewCalls = 0;
+  handlers.xui_overview = () => { overviewCalls++; return snapshot; };
+  const initial = await view.load();
+  assert.equal(overviewCalls, 1);
+  assert.equal(initial[0], snapshot.status);
+  assert.equal(initial[1], snapshot.settings);
+  assert.equal(initial[2], snapshot.certificate);
   assert.equal(view.tokenSaveButton.disabled, true);
   assert.notEqual(view.tokenSaveButton.style.display, 'none');
   assert.equal(view.routingSaveButton.disabled, true);

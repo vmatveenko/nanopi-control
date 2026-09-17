@@ -37,6 +37,18 @@ FOUND_SCOPE=""
 FOUND_CONFLICT=""
 ISSUED_TOKEN=""
 WORKING_TOKEN=""
+CONTAINER_METADATA_LOADED=0
+CONTAINER_METADATA_AT=0
+CONTAINER_PRESENT=0
+CONTAINER_STATE=""
+CONTAINER_ID=""
+CONTAINER_IMAGE=""
+CONTAINER_CREATED=""
+CONTAINER_STARTED=""
+CONTAINER_RESTART_POLICY=""
+CONTAINER_NETWORK_MODE=""
+CONTAINER_VERSION=""
+CONTAINER_FAIL2BAN=false
 
 . /usr/share/libubox/jshn.sh
 
@@ -44,12 +56,44 @@ docker_ready() {
 	command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
+load_container_metadata() {
+	local metadata now
+	now="$(date +%s)"
+	if [ "$CONTAINER_METADATA_LOADED" != 0 ] && [ "$now" -ge "$CONTAINER_METADATA_AT" ] && [ "$((now - CONTAINER_METADATA_AT))" -lt 5 ]; then
+		[ "$CONTAINER_PRESENT" = 1 ]
+		return
+	fi
+	CONTAINER_METADATA_LOADED=1
+	CONTAINER_METADATA_AT="$now"
+	CONTAINER_PRESENT=0
+	command -v docker >/dev/null 2>&1 || return 1
+	metadata="$(docker container inspect -f '{{.Id}}
+{{.State.Status}}
+{{.Config.Image}}
+{{.Created}}
+{{.State.StartedAt}}
+{{.HostConfig.RestartPolicy.Name}}
+{{.HostConfig.NetworkMode}}
+{{index .Config.Labels "org.opencontainers.image.version"}}
+{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null)" || return 1
+	CONTAINER_ID="$(printf '%s\n' "$metadata" | sed -n '1p' | cut -c1-12)"
+	CONTAINER_STATE="$(printf '%s\n' "$metadata" | sed -n '2p')"
+	CONTAINER_IMAGE="$(printf '%s\n' "$metadata" | sed -n '3p')"
+	CONTAINER_CREATED="$(printf '%s\n' "$metadata" | sed -n '4p')"
+	CONTAINER_STARTED="$(printf '%s\n' "$metadata" | sed -n '5p')"
+	CONTAINER_RESTART_POLICY="$(printf '%s\n' "$metadata" | sed -n '6p')"
+	CONTAINER_NETWORK_MODE="$(printf '%s\n' "$metadata" | sed -n '7p')"
+	CONTAINER_VERSION="$(printf '%s\n' "$metadata" | sed -n '8p')"
+	CONTAINER_FAIL2BAN="$(printf '%s\n' "$metadata" | tail -n +9 | awk -F= '$1 == "XUI_ENABLE_FAIL2BAN" { print $2; exit }')"
+	CONTAINER_PRESENT=1
+}
+
 container_exists() {
-	docker_ready && docker container inspect "$CONTAINER" >/dev/null 2>&1
+	load_container_metadata
 }
 
 container_running() {
-	container_exists && [ "$(docker container inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]
+	container_exists && [ "$CONTAINER_STATE" = running ]
 }
 
 tun_runtime_ready() {
@@ -336,20 +380,20 @@ status() {
 		return
 	fi
 
-	id="$(docker container inspect -f '{{.Id}}' "$CONTAINER" 2>/dev/null | cut -c1-12)"
-	state="$(docker container inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
-	image="$(docker container inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null)"
-	created="$(docker container inspect -f '{{.Created}}' "$CONTAINER" 2>/dev/null)"
-	started="$(docker container inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null)"
-	restart_policy="$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$CONTAINER" 2>/dev/null)"
-	network_mode="$(docker container inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER" 2>/dev/null)"
+	id="$CONTAINER_ID"
+	state="$CONTAINER_STATE"
+	image="$CONTAINER_IMAGE"
+	created="$CONTAINER_CREATED"
+	started="$CONTAINER_STARTED"
+	restart_policy="$CONTAINER_RESTART_POLICY"
+	network_mode="$CONTAINER_NETWORK_MODE"
 	running=0
 	[ "$state" = "running" ] && running=1
-	version=""
-	if [ "$running" -eq 1 ]; then
+	version="$CONTAINER_VERSION"
+	if [ "$running" -eq 1 ] && [ -z "$version" ]; then
 		version="$(docker exec "$CONTAINER" /app/x-ui -v 2>&1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 	fi
-	fail2ban="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null | awk -F= '$1 == "XUI_ENABLE_FAIL2BAN" { print $2; exit }')"
+	fail2ban="$CONTAINER_FAIL2BAN"
 	routing_active=0
 	degraded=0
 	if routing_is_active; then
