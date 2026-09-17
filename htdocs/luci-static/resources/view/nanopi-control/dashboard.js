@@ -244,33 +244,63 @@ return view.extend({
 		if (module.id === 'docker') return '—';
 		if (module.installed) return E('span', { 'title': module.image || '' }, module.version || 'Не определена');
 		this.moduleVersionChoices = this.moduleVersionChoices || {};
-		this.moduleVersionRequests = this.moduleVersionRequests || {};
-		const choices = this.moduleVersionChoices;
-		const select = E('select', {
-			'class': 'cbi-input-select',
-			'aria-label': 'Версия ' + module.name,
-			'change': function() { choices[module.id] = select.value; }
-		}, [ E('option', { 'value': 'latest' }, 'latest (последняя)') ]);
-		select.disabled = busy || !module.can_install;
-		const hint = E('small', { 'style': 'display:block;color:#d97706;max-width:280px' });
-		const current = choices[module.id] || 'latest';
-		if (current !== 'latest') select.appendChild(E('option', { 'value': current }, current));
-		select.value = current;
-		if (!this.moduleVersionRequests[module.id])
-			this.moduleVersionRequests[module.id] = callModuleVersions(module.id).catch(function() {
-				return { error: 'Не удалось загрузить список версий. Доступна установка latest.' };
-			});
-		this.moduleVersionRequests[module.id].then(function(result) {
-			const selected = select.value;
-			const versions = [ 'latest' ].concat((result.versions || []).filter(function(v) { return v !== 'latest'; }));
-			if (versions.indexOf(selected) < 0) versions.push(selected);
-			select.replaceChildren.apply(select, versions.map(function(v) {
-				return E('option', { 'value': v }, v === 'latest' ? 'latest (последняя)' : v);
-			}));
-			select.value = selected;
-			hint.textContent = result.error || '';
+		const view = this;
+		const current = view.moduleVersionChoices[module.id] || 'latest';
+		if (busy) return E('span', {}, current);
+		const link = E('a', { 'href': '#' }, current);
+		link.addEventListener('click', function(event) {
+			event.preventDefault();
+			return view.chooseModuleVersion(module, link);
 		});
-		return E('div', {}, [ select, hint ]);
+		return link;
+	},
+
+	chooseModuleVersion: function(module, link) {
+		const view = this;
+		view.moduleVersionRequests = view.moduleVersionRequests || {};
+		let selected = view.moduleVersionChoices[module.id] || 'latest';
+		let closed = false;
+		const list = E('div', { 'style': 'max-height:320px;overflow:auto;margin:12px 0' });
+		const message = E('p', {}, 'Загрузка версий…');
+		const close = function() { closed = true; ui.hideModal(); };
+		const renderList = function(versions) {
+			const values = [ 'latest' ].concat((versions || []).filter(function(v) { return v !== 'latest'; }));
+			if (values.indexOf(selected) < 0) values.push(selected);
+			list.replaceChildren.apply(list, values.map(function(version) {
+				const input = E('input', { 'type': 'radio', 'name': 'module-version', 'value': version });
+				input.checked = version === selected;
+				input.addEventListener('change', function() { if (input.checked) selected = version; });
+				return E('label', { 'style': 'display:block;padding:7px;cursor:pointer' }, [
+					input, ' ' + (version === 'latest' ? 'latest — последняя' : version)
+				]);
+			}));
+		};
+		const load = function() {
+			message.textContent = 'Загрузка версий…';
+			if (!view.moduleVersionRequests[module.id])
+				view.moduleVersionRequests[module.id] = callModuleVersions(module.id).catch(function() {
+					return { error: 'Не удалось загрузить версии. Доступна установка latest.' };
+				});
+			return view.moduleVersionRequests[module.id].then(function(result) {
+				if (result.error) delete view.moduleVersionRequests[module.id];
+				if (closed) return;
+				renderList(result.versions);
+				message.replaceChildren(result.error || '');
+				if (result.error) message.appendChild(E('a', { 'href': '#', 'style': 'margin-left:8px', 'click': function(event) {
+					event.preventDefault(); return load();
+				} }, 'Повторить'));
+			});
+		};
+		renderList([]);
+		ui.showModal('Версия ' + module.name, [ message, list, E('div', { 'class': 'right' }, [
+			E('button', { 'class': 'btn', 'click': close }, 'Отмена'), ' ',
+			E('button', { 'class': 'btn cbi-button-positive', 'click': function() {
+				view.moduleVersionChoices[module.id] = selected;
+				link.textContent = selected;
+				close();
+			} }, 'Применить')
+		]) ]);
+		return load();
 	},
 
 	renderModules: function(state, container) {
@@ -344,10 +374,10 @@ return view.extend({
 				E('div', { 'style': 'color:#d97706;margin-top:3px' }, module.blocked_reason)
 			]);
 
-			return [ module.name || module.id, view.renderModuleVersion(module, !!job.running), status, dependencies, action ];
+			return [ module.name || module.id, status, dependencies, view.renderModuleVersion(module, !!job.running), action ];
 		});
 
-		return table(rows, [ 'Модуль', 'Версия', 'Состояние', 'Зависимости', 'Действие' ]);
+		return table(rows, [ 'Модуль', 'Состояние', 'Зависимости', 'Версия', 'Действие' ]);
 	},
 
 	pollSdExpansion: function(container) {

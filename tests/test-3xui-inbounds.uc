@@ -56,4 +56,10 @@ result = reconcile([a], [rule('vless','tcp',8443,'one'), rule('vless','tcp',8443
 check(result.rows[0].state == 'stale', 'duplicate owned repair');
 result = reconcile([b], [rule('hy','tcp',443)], []);
 check(length(result.orphans) == 1, 'removed transport orphan');
+let dotted = rule('tag.with.dots', 'tcp', 443);
+dotted.name = '3xUI.tag.with.dots.tcp';
+check(reconcile([inbound('tag.with.dots','vless',443)], [dotted], []).rows[0].state == 'open', 'dotted tags');
+let panelRule = rule('web-panel','tcp',443,'nanopi_control_xui_panel');
+panelRule.name = '3xUI.web-panel.tcp';
+check(length(reconcile([], [panelRule], []).orphans) == 0, 'panel never becomes inbound orphan');
 print(sprintf('PASS: %d inbound reconciliation checks\n', count));

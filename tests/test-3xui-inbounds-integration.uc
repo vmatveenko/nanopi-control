@@ -23,6 +23,7 @@ let result = call('prepare',{action:'open',tag:'test-vless',transport:'tcp',snap
 check(result.accepted, 'prepare open'); commit();
 state = call('status');
 check(state.rows[0].state == 'open', 'persisted own rule detected');
+check(state.rows[0].rules[0].name == '3xUI.test-vless.tcp', 'standard firewall name');
 check(!call('prepare',{action:'close',tag:'test-vless',transport:'tcp',snapshot:'stale'}).accepted, 'stale request rejected');
 inbounds[0].port=65432;
 state=call('status'); check(state.rows[0].state == 'stale', 'changed port');

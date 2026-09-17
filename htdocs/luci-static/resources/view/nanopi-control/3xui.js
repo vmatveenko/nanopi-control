@@ -80,7 +80,7 @@ function formatDate(value) {
 
 function panelUrl(port, path, scheme, domain) {
 	if (!port) return '';
-	let host = scheme === 'https' && domain ? domain : window.location.hostname;
+	let host = domain || window.location.hostname;
 	if (host.indexOf(':') >= 0 && host.charAt(0) !== '[')
 		host = '[' + host + ']';
 	return (scheme === 'https' ? 'https' : 'http') + '://' + host + ':' + port + (path || '/');
@@ -147,7 +147,7 @@ return view.extend({
 
 	performAction: function(action) {
 		const view = this;
-		if (action !== 'stop' || !view.routingActive)
+		if (action !== 'stop' || !view.routingRequested)
 			return view.runContainerAction(action);
 
 		ui.showModal('Остановить 3x-ui?', [
@@ -236,6 +236,7 @@ return view.extend({
 				const url = panelUrl(result.panel_port, result.panel_path, result.panel_scheme, result.panel_domain);
 				view.panelLink.href = url;
 				view.panelLink.textContent = url;
+				view.updatePanelLinks(result);
 			}
 			if (showModal !== false) {
 				ui.hideModal();
@@ -326,8 +327,27 @@ return view.extend({
 		});
 	},
 
+	watchRoutingRestore: function() {
+		const view = this;
+		const generation = view.routingPollGeneration || 0;
+		window.setTimeout(function() {
+			if (generation !== (view.routingPollGeneration || 0) || !view.routingRequested || !view.routingState.isConnected) return;
+			callXuiSettings().then(function(settings) {
+				if (generation !== (view.routingPollGeneration || 0)) return;
+				view.routingActive = !!settings.routing_active;
+				view.routingRequested = !!settings.routing_requested;
+				const state = settings.routing_state;
+				view.routingState.textContent = state === 'active' ? 'Включена' : state === 'waiting' ? 'Ожидание запуска 3xUI' : state === 'error' ? 'Ошибка восстановления' : 'Выключена';
+				view.routingState.title = settings.routing_error || '';
+				view.routingState.style.color = state === 'active' ? '#16803a' : state === 'disabled' ? '#667085' : '#b54708';
+				if (view.routingRequested && state !== 'active') view.watchRoutingRestore();
+			}).catch(function() { if (generation === (view.routingPollGeneration || 0)) view.watchRoutingRestore(); });
+		}, 5000);
+	},
+
 	setRouting: function(enabled) {
 		const view = this;
+		view.routingPollGeneration = (view.routingPollGeneration || 0) + 1;
 		view.routingButton.disabled = true;
 		ui.showModal('Маршрутизация через 3x-ui', [
 			E('p', { 'class': 'spinning' }, enabled
@@ -340,6 +360,7 @@ return view.extend({
 		}).then(function(result) {
 			operationError(result, enabled ? 'Не удалось включить маршрутизацию' : 'Не удалось выключить маршрутизацию');
 			view.routingActive = enabled;
+			view.routingRequested = enabled;
 			view.routingButton.textContent = enabled ? 'Выключить маршрутизацию' : 'Включить маршрутизацию';
 			view.routingButton.className = enabled ? 'btn cbi-button-negative' : 'btn cbi-button-action';
 			view.routingState.textContent = enabled ? 'Включена' : 'Выключена';
@@ -350,7 +371,8 @@ return view.extend({
 			ui.hideModal();
 			ui.addNotification(null, E('p', {}, error.message), 'error');
 		}).finally(function() {
-			view.routingButton.disabled = !view.containerRunning && !view.routingActive;
+			view.routingButton.disabled = !view.containerRunning && !view.routingRequested;
+			if (view.routingRequested) view.watchRoutingRestore();
 		});
 	},
 
@@ -451,7 +473,8 @@ return view.extend({
 				]);
 			}), 'Входящих с поддерживаемым портом нет. Создайте входящее в 3xUI и нажмите «Обновить».')),
 			E('div', { 'class': 'right', 'style': 'text-align:right;margin-top:8px;margin-bottom:16px' },
-				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(view, function() { return view.refreshInbounds(); }) }, 'Обновить')),
+				[ E('a', { 'href': L.url('admin', 'network', 'firewall', 'rules'), 'style': 'margin-right:12px' }, 'Правила firewall'),
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(view, function() { return view.refreshInbounds(); }) }, 'Обновить') ]),
 			E('h3', {}, 'Правила без соответствующего входящего'),
 			table([ 'Правило / тег', 'Порт', 'Транспорт', 'Состояние', 'Действие' ], (result.orphans || []).map(row =>
 				E('tr', { 'class': 'tr' }, [ E('td', { 'class': 'td' }, [ E('div', {}, row.name), E('small', {}, row.tag) ]),
@@ -461,6 +484,24 @@ return view.extend({
 		);
 	},
 
+	updatePanelLinks: function(data) {
+		this.panelAddress = Object.assign(this.panelAddress || {}, data);
+		if (!this.panelLinks) return;
+		const address = this.panelAddress;
+		const links = [];
+		const domain = address.panel_domain;
+		const ip = address.panel_lan_ip;
+		if (domain) links.push(E('a', { 'href': panelUrl(address.panel_port, address.panel_path, address.panel_scheme, domain), 'target': '_blank', 'rel': 'noreferrer' },
+			panelUrl(address.panel_port, address.panel_path, address.panel_scheme, domain)));
+		if (ip || !domain) {
+			if (links.length) links.push(', ');
+			const url = panelUrl(address.panel_port, address.panel_path, address.panel_scheme, ip);
+			links.push(E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer',
+				'title': address.panel_scheme === 'https' ? 'Сертификат домена может не покрывать IP-адрес' : '' }, url));
+		}
+		this.panelLinks.replaceChildren.apply(this.panelLinks, links);
+	},
+
 	updateCertificate: function(data) {
 		this.certData = data;
 		if (this.certDomainValue) this.certDomainValue.textContent = data.domain || 'Не указан';
@@ -468,6 +509,7 @@ return view.extend({
 		if (this.panelLink && data.panel_port) {
 			const url = panelUrl(data.panel_port, data.panel_path, data.panel_scheme, data.panel_domain);
 			this.panelLink.href = url; this.panelLink.textContent = url;
+			this.updatePanelLinks(data);
 		}
 	},
 
@@ -691,6 +733,8 @@ return view.extend({
 		const running = !!state.running;
 		const url = panelUrl(state.panel_settings_known ? state.panel_port : '', state.panel_path, state.panel_scheme, state.panel_domain);
 		view.panelLink = E('a', { 'href': url, 'target': '_blank', 'rel': 'noreferrer' }, url);
+		view.panelLinks = E('span');
+		view.updatePanelLinks(state);
 		const firstButton = E('button', {
 			'class': 'btn cbi-button-action neutral'
 		}, running ? 'Перезапустить' : 'Запустить');
@@ -698,12 +742,13 @@ return view.extend({
 			'class': 'btn cbi-button-action negative'
 		}, 'Остановить');
 		view.routingActive = !!settings.routing_active;
+		view.routingRequested = settings.routing_requested == null ? view.routingActive : !!settings.routing_requested;
 		view.routingButton = E('button', {
-			'class': view.routingActive ? 'btn cbi-button-negative' : 'btn cbi-button-action'
-		}, view.routingActive ? 'Выключить маршрутизацию' : 'Включить маршрутизацию');
+			'class': view.routingRequested ? 'btn cbi-button-negative' : 'btn cbi-button-action'
+		}, view.routingRequested ? 'Выключить маршрутизацию' : 'Включить маршрутизацию');
 		firstButton.disabled = !installed;
 		stopButton.disabled = !running;
-		view.routingButton.disabled = !running && !view.routingActive;
+		view.routingButton.disabled = !running && !view.routingRequested;
 		firstButton.addEventListener('click', ui.createHandlerFn(view, function() {
 			return view.performAction(running ? 'restart' : 'start');
 		}));
@@ -711,12 +756,14 @@ return view.extend({
 			return view.performAction('stop');
 		}));
 		view.routingButton.addEventListener('click', ui.createHandlerFn(view, function() {
-			return view.setRouting(!view.routingActive);
+			return view.setRouting(!view.routingRequested);
 		}));
 		const stateColor = running ? '#16803a' : installed ? '#d97706' : '#b42318';
 		view.routingState = E('span', {
-			'style': 'color:' + (view.routingActive ? '#16803a' : '#667085')
-		}, view.routingActive ? 'Включена' : 'Выключена');
+			'style': 'color:' + (settings.routing_state === 'waiting' || settings.routing_state === 'error' ? '#b54708' : view.routingActive ? '#16803a' : '#667085'),
+			'title': settings.routing_error || ''
+		}, settings.routing_state === 'waiting' ? 'Ожидание запуска 3xUI' : settings.routing_state === 'error' ? 'Ошибка восстановления' : view.routingActive ? 'Включена' : 'Выключена');
+		if (view.routingRequested && settings.routing_state !== 'active') view.watchRoutingRestore();
 		const rows = [
 			[ 'Состояние', E('span', { 'style': 'color:' + stateColor }, stateLabel(state.state)) ],
 			[ 'Маршрутизация', view.routingState ],
@@ -729,7 +776,7 @@ return view.extend({
 			[ 'Сетевой режим', state.network_mode || '—' ],
 			[ 'Fail2ban', state.fail2ban === 'true' ? 'Включён' : 'Отключён' ],
 			[ 'Каталог данных', state.data_path || '/opt/3x-ui' ],
-			[ 'Панель', installed && url ? view.panelLink : 'Недоступна, пока адрес панели не определён' ]
+			[ 'Панель', installed && url ? view.panelLinks : 'Недоступна, пока адрес панели не определён' ]
 		];
 		const informationContent = [ twoColumnTable('Информация', rows) ];
 		if (state.routing_degraded) {

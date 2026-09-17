@@ -1,0 +1,69 @@
+#!/bin/sh
+# Desired state lives in UCI, never in /tmp. Only explicit user actions change it.
+NANOPI_XUI_LIBRARY=1
+. /usr/libexec/nanopi-control/3xui-control
+
+guard() (
+	take_lock
+	routing_requested || return 0
+	local lan rules cidr had_guard=0
+	nft list table inet nanopi_xui_guard >/dev/null 2>&1 && had_guard=1
+	lan="$(uci -q get network.lan.device)"
+	[ -n "$lan" ] || lan="$(uci -q get network.lan.ifname)"
+	case "$lan" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+	rules="$(mktemp /tmp/nanopi-control/guard.XXXXXX)" || return 1
+	trap 'rm -f "$rules"' EXIT
+	{
+		nft list table inet nanopi_xui_guard >/dev/null 2>&1 && echo 'delete table inet nanopi_xui_guard'
+		echo 'table inet nanopi_xui_guard { chain forward { type filter hook forward priority -10; policy accept;'
+		# INPUT is unaffected, so SSH/LuCI/DNS on the router remain reachable.
+		{ collect_auto4; uci -q get nanopi-control.xui.exclude4 | tr ' ' '\n'; } | sort -u | while read -r cidr; do
+			[ -z "$cidr" ] || echo "iifname \"$lan\" ip daddr $cidr return"
+		done
+		{ collect_auto6; uci -q get nanopi-control.xui.exclude6 | tr ' ' '\n'; } | sort -u | while read -r cidr; do
+			[ -z "$cidr" ] || echo "iifname \"$lan\" ip6 daddr $cidr return"
+		done
+		echo "iifname \"$lan\" reject with icmpx type admin-prohibited"
+		echo '}'
+		echo '}'
+	} > "$rules"
+	nft -f "$rules" || return 1
+	[ "$had_guard" = 1 ] || logger -t nanopi-routing 'Защита LAN включена до восстановления маршрутизации'
+)
+
+healthy() {
+	routing_is_active && ip link show dev "$TUN_NAME" >/dev/null 2>&1 &&
+		ip -4 route show table "$TABLE4" | grep -q "default dev $TUN_NAME" &&
+		ip -4 rule show | grep -q "^$RULE4_PRIORITY:.*lookup $TABLE4" &&
+		nft list chain inet fw4 forward 2>/dev/null | grep -qF 'nanopi-control: LAN to 3x-ui TUN' &&
+		container_running || return 1
+	if [ "$(uci -q get nanopi-control.xui.block_ipv6)" != 1 ]; then
+		ip -6 route show table "$TABLE6" | grep -q "default dev $TUN_NAME" &&
+			ip -6 rule show | grep -q "^$RULE6_PRIORITY:.*lookup $TABLE6" || return 1
+	fi
+}
+
+case "$1" in
+	guard) guard ;;
+	run)
+		while :; do
+			if routing_requested; then
+				if healthy && ! nft list table inet nanopi_xui_guard >/dev/null 2>&1; then
+					rm -f /tmp/nanopi-control/routing-error
+				else
+					if guard; then
+						result="$(timeout -k 5 90 /usr/libexec/nanopi-control/3xui-control restore-routing)"
+						if [ "$(jsonfilter -s "$result" -e '@.accepted')" != true ]; then
+							error="$(jsonfilter -s "$result" -e '@.error')"
+							printf '%s\n' "${error:-Ожидание готовности Docker, 3xUI и TUN}" > /tmp/nanopi-control/routing-error
+						fi
+					else
+						printf '%s\n' 'Не удалось включить защиту на время восстановления' > /tmp/nanopi-control/routing-error
+					fi
+				fi
+			fi
+			sleep 10
+		done
+		;;
+	*) exit 1 ;;
+esac

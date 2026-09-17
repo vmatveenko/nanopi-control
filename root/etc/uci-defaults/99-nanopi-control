@@ -2,5 +2,8 @@
 
 /etc/init.d/nanopi-control enable
 /etc/init.d/nanopi-control start
+/usr/libexec/nanopi-control/3xui-control migrate-routing
+/usr/libexec/nanopi-control/3xui-control migrate-firewall
+/etc/init.d/nanopi-routing enable
+/etc/init.d/nanopi-routing start
 exit 0
-

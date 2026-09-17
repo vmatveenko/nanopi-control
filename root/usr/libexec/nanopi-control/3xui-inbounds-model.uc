@@ -25,7 +25,14 @@ function transports(inbound) {
 }
 function owned(rule) {
 	// Keep ownership in the standard name/comment, avoiding unsupported fw4 options.
+	if (rule['.name'] == 'nanopi_control_xui_panel') return false;
 	let name = rule.name || '', suffix = substr(name, -6);
+	let modern = match(name, /^3xUI\.(.+)\.(tcp|udp)$/);
+	if (modern) {
+		rule.nanopi_tag = modern[1];
+		rule.nanopi_transport = modern[2];
+		return true;
+	}
 	if (index(name, '3xUI: ') != 0 || length(name) <= 12 || !has([' / tcp', ' / udp'], suffix)) return false;
 	rule.nanopi_tag = substr(name, 6, length(name) - 12);
 	rule.nanopi_transport = substr(suffix, 3);

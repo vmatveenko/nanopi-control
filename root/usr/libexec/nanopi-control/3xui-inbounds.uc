@@ -39,7 +39,7 @@ try {
 			if (action == 'open' || action == 'fix') {
 				let section = uci.add('firewall', 'rule');
 				if (!section) die('Не удалось создать правило');
-				let options = { name: '3xUI: ' + target.tag + ' / ' + target.transport,
+				let options = { name: '3xUI.' + target.tag + '.' + target.transport,
 					src: 'wan', proto: target.transport, dest_port: '' + target.port,
 					target: 'ACCEPT', family: 'any', enabled: '1' };
 				for (let key, value in options)

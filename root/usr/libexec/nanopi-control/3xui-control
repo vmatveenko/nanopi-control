@@ -18,7 +18,7 @@ PANEL_DOMAIN=""
 PANEL_TRUST_FILE=/tmp/nanopi-control/xui-panel-ca.pem
 API_TIMEOUT=15
 PANEL_FIREWALL="nanopi_control_xui_panel"
-PANEL_FIREWALL_NAME="WrtPilot 3x-ui panel"
+PANEL_FIREWALL_NAME="3xUI.web-panel.tcp"
 MARK_VALUE="0x40000000"
 MARK_MASK="0x40000000"
 RULE4_PRIORITY=11000
@@ -128,15 +128,62 @@ load_panel_endpoint() {
 	PANEL_KNOWN=1
 }
 
+panel_lan_ip() {
+	local address
+	address="$(ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)"
+	[ -n "$address" ] || address="$(uci -q get network.lan.ipaddr | cut -d/ -f1)"
+	printf '%s' "$address"
+}
+
+routing_requested() { [ "$(uci -q get nanopi-control.xui.routing_enabled)" = 1 ]; }
+remember_routing() {
+	[ "$(uci -q get nanopi-control.xui.routing_enabled)" != "$1" ] || return 0
+	[ -z "$(uci changes nanopi-control)" ] || return 1
+	uci -q get nanopi-control.xui >/dev/null || uci set nanopi-control.xui=xui
+	uci set "nanopi-control.xui.routing_enabled=$1" && uci commit nanopi-control
+}
+migrate_routing_state() {
+	take_lock
+	[ -z "$(uci -q get nanopi-control.xui.routing_enabled)" ] || return 0
+	if routing_is_active; then remember_routing 1; else remember_routing 0; fi
+}
+
+add_routing_status() {
+	local state=disabled error=''
+	if routing_requested; then
+		state=waiting
+		if routing_is_active && ! nft list table inet nanopi_xui_guard >/dev/null 2>&1 && ip link show dev "$TUN_NAME" >/dev/null 2>&1 && container_running; then state=active;
+		elif [ -s /tmp/nanopi-control/routing-error ]; then state=error; error="$(cat /tmp/nanopi-control/routing-error)"; fi
+	fi
+	json_add_boolean routing_requested "$(routing_requested && echo 1 || echo 0)"
+	json_add_string routing_state "$state"
+	json_add_string routing_error "$error"
+}
+
+migrate_firewall_names() {
+	local backup changed
+	take_lock
+	[ -z "$(uci changes firewall)" ] || return 1
+	backup="$(mktemp -d /root/nanopi-firewall-names-XXXXXX)" || return 1
+	cp -p /etc/config/firewall "$backup/firewall" || return 1
+	changed="$(ucode /usr/libexec/nanopi-control/firewall-migrate.uc)" || { uci revert firewall; return 1; }
+	[ "$changed" != 0 ] || return 0
+	if ! uci commit firewall || ! fw4 check >/dev/null 2>&1 || ! /etc/init.d/firewall reload; then
+		uci revert firewall; cp -p "$backup/firewall" /etc/config/firewall
+		/etc/init.d/firewall reload
+		return 1
+	fi
+}
+
 panel_wan_enabled() {
-	[ "$(uci -q get firewall.$PANEL_FIREWALL.name)" = "$PANEL_FIREWALL_NAME" ] &&
+	case "$(uci -q get firewall.$PANEL_FIREWALL.name)" in "$PANEL_FIREWALL_NAME"|"WrtPilot 3x-ui panel") ;; *) return 1 ;; esac
 	[ "$(uci -q get firewall.$PANEL_FIREWALL.enabled)" != "0" ]
 }
 
 apply_panel_firewall() {
 	local enabled="$1" port="$2" owner backup
 	owner="$(uci -q get firewall.$PANEL_FIREWALL.name)"
-	if uci -q get "firewall.$PANEL_FIREWALL" >/dev/null && [ "$owner" != "$PANEL_FIREWALL_NAME" ]; then
+	if uci -q get "firewall.$PANEL_FIREWALL" >/dev/null && [ "$owner" != "$PANEL_FIREWALL_NAME" ] && [ "$owner" != "WrtPilot 3x-ui panel" ]; then
 		LAST_ERROR="Имя правила панели занято другим правилом firewall"
 		return 1
 	fi
@@ -263,6 +310,7 @@ save_panel_settings() {
 	json_add_string panel_path "$PANEL_PATH"
 	json_add_string panel_scheme "$PANEL_SCHEME"
 	json_add_string panel_domain "$PANEL_DOMAIN"
+	json_add_string panel_lan_ip "$(panel_lan_ip)"
 	json_add_boolean panel_wan "$wan"
 	json_add_string message "Настройки панели сохранены"
 	json_dump
@@ -282,6 +330,7 @@ status() {
 		json_add_string state absent
 		json_add_boolean routing_active "$(routing_is_active && echo 1 || echo 0)"
 		json_add_boolean routing_degraded "$(routing_is_active && echo 1 || echo 0)"
+		add_routing_status
 		json_add_string error "Контейнер 3x-ui не найден"
 		json_dump
 		return
@@ -326,9 +375,11 @@ status() {
 	json_add_string panel_path "$PANEL_PATH"
 	json_add_string panel_scheme "$PANEL_SCHEME"
 	json_add_string panel_domain "$PANEL_DOMAIN"
+	json_add_string panel_lan_ip "$(panel_lan_ip)"
 	json_add_boolean panel_settings_known "$PANEL_KNOWN"
 	json_add_string data_path /opt/3x-ui
 	json_add_boolean routing_active "$routing_active"
+	add_routing_status
 	json_add_boolean routing_degraded "$degraded"
 	json_add_string error ""
 	json_dump
@@ -685,12 +736,14 @@ settings_status() {
 	json_add_string panel_path "$PANEL_PATH"
 	json_add_string panel_scheme "$PANEL_SCHEME"
 	json_add_string panel_domain "$PANEL_DOMAIN"
+	json_add_string panel_lan_ip "$(panel_lan_ip)"
 	json_add_boolean panel_settings_known "$PANEL_KNOWN"
 	json_add_boolean panel_wan "$(panel_wan_enabled && echo 1 || echo 0)"
 	json_add_string exclude4 "$exclude4"
 	json_add_string exclude6 "$exclude6"
 	json_add_boolean block_ipv6 "$block"
 	json_add_boolean routing_active "$routing_active"
+	add_routing_status
 	json_add_array automatic_exclude4
 	while IFS= read -r item; do json_add_string "" "$item"; done <"$auto4"
 	json_close_array
@@ -1052,8 +1105,9 @@ apply_routing_rules() {
 }
 
 set_routing() {
-	local enabled="$1" token
+	local enabled="$1" restoring="${2:-0}" token
 	take_lock
+	[ "$restoring" != 1 ] || routing_requested || { json_result 1 "Восстановление отменено" "" ""; return; }
 	case "$enabled" in 1|true)
 		container_running || {
 			json_result 0 "" "Маршрутизацию нельзя включить: контейнер 3x-ui не запущен" ""
@@ -1080,10 +1134,17 @@ set_routing() {
 			json_result 0 "" "$LAST_ERROR" ""
 			exit 1
 		}
+		remember_routing 1 || { json_result 0 "" "Не удалось сохранить состояние маршрутизации" ""; return 1; }
+		nft delete table inet nanopi_xui_guard >/dev/null 2>&1 || true
+		rm -f /tmp/nanopi-control/routing-error
+		[ "$restoring" != 1 ] || logger -t nanopi-routing 'Маршрутизация восстановлена, защита ожидания снята'
 		json_result 1 "Маршрутизация LAN через 3x-ui включена" "" ""
 		;;
 	*)
+		remember_routing 0 || { json_result 0 "" "Не удалось сохранить выключение маршрутизации" ""; return 1; }
 		disable_routing
+		nft delete table inet nanopi_xui_guard >/dev/null 2>&1 || true
+		rm -f /tmp/nanopi-control/routing-error
 		json_result 1 "Маршрутизация LAN через 3x-ui выключена" "" ""
 		;;
 	esac
@@ -1091,6 +1152,8 @@ set_routing() {
 
 purge_settings() {
 	take_lock
+	remember_routing 0 || return 1
+	nft delete table inet nanopi_xui_guard >/dev/null 2>&1 || true
 	apply_panel_firewall 0 "$PANEL_PORT" || {
 		json_result 0 "" "$LAST_ERROR" ""
 		exit 1
@@ -1165,6 +1228,9 @@ case "$1" in
 	issue-token) issue_token_command ;;
 	reset-password) reset_password_command ;;
 	routing) set_routing "$2" ;;
+	restore-routing) set_routing 1 1 ;;
+	migrate-firewall) migrate_firewall_names ;;
+	migrate-routing) migrate_routing_state ;;
 	purge) purge_settings ;;
 	action) action "$2" ;;
 	*)

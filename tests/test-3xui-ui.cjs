@@ -48,6 +48,7 @@ const handlers = {
   xui_routing_set: () => ({ accepted: true })
 };
 const sandbox = {
+	L: { url: (...parts) => '/cgi-bin/luci/' + parts.join('/') },
   E: (tag, attrs, children) => new Element(tag, attrs, children),
   view: { extend: value => value },
   rpc: { declare: spec => (...args) => Promise.resolve().then(() => handlers[spec.method](...args)) },
@@ -126,6 +127,7 @@ const edit = async (input, value) => { input.value = value; await input.dispatch
     row.state='open'; row.action='close'; return {accepted:true};
   };
   await view.refreshInbounds();
+  assert.equal(links(view.inboundsPanel).find(b=>flat(b).join('')==='Правила firewall').href, '/cgi-bin/luci/admin/network/firewall/rules');
   assert.equal(links(view.inboundsPanel).filter(b=>flat(b).join('')==='Открыть').length,1);
   assert(flat(view.inboundsPanel).includes('Открыт другим правилом'));
   assert(flat(view.inboundsPanel).includes('Правила без соответствующего входящего'));
@@ -160,6 +162,11 @@ const edit = async (input, value) => { input.value = value; await input.dispatch
   view.updateCertificate(certState);
   assert.equal(view.panelLink.href,'https://vpn.example.com:4054/private/');
   assert.equal(view.certDomainValue.textContent,'vpn.example.com');
+  view.panelLinks = new Element('span');
+  view.updatePanelLinks({ panel_port:'4053', panel_path:'/panel/', panel_scheme:'https', panel_domain:'router.example.com', panel_lan_ip:'192.168.10.1' });
+  assert.deepEqual(links(view.panelLinks).map(x=>x.href), ['https://router.example.com:4053/panel/', 'https://192.168.10.1:4053/panel/']);
+  view.updatePanelLinks({ panel_port:'8443' });
+  assert(links(view.panelLinks).every(x=>x.href.includes(':8443/panel/')));
   console.log('PASS: visible disabled Save, dirty/revert behavior for all settings, automatic token actions, independent routing drafts, link update, errors, neutral colors');
   console.log('PASS: inbound tables, shared permission, orphan delete, confirmation, refresh and API failure');
   console.log('PASS: manual certificate dialog, single job, progress number/bar, certificate fields and HTTPS link');
