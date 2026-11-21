@@ -1087,6 +1087,9 @@ render_nft_rules() {
 		echo "table $NFT_FAMILY $NFT_TABLE {"
 		echo " chain prerouting {"
 		echo "  type filter hook prerouting priority -150; policy accept;"
+		# Conntrack has already identified replies at this priority. Keep DNAT
+		# replies on the normal WAN route, regardless of protocol or port.
+		echo "  iifname \"$lan\" ct status dnat ct direction reply counter return"
 		while IFS= read -r cidr; do
 			[ -n "$cidr" ] && echo "  iifname \"$lan\" ip daddr $cidr return"
 		done <"$combined4"
@@ -1101,6 +1104,7 @@ render_nft_rules() {
 		if [ "$block" = "1" ]; then
 			echo " chain forward {"
 			echo "  type filter hook forward priority -5; policy accept;"
+			echo "  iifname \"$lan\" ct status dnat ct direction reply meta nfproto ipv6 counter return"
 			while IFS= read -r cidr; do
 				[ -n "$cidr" ] && echo "  iifname \"$lan\" ip6 daddr $cidr return"
 			done <"$combined6"

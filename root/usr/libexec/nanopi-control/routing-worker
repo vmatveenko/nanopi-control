@@ -17,6 +17,8 @@ guard() (
 		nft list table inet nanopi_xui_guard >/dev/null 2>&1 && echo 'delete table inet nanopi_xui_guard'
 		echo 'table inet nanopi_xui_guard { chain forward { type filter hook forward priority -10; policy accept;'
 		# INPUT is unaffected, so SSH/LuCI/DNS on the router remain reachable.
+		# Keep replies to existing port forwards reachable while Xray is down.
+		echo "iifname \"$lan\" ct status dnat ct direction reply counter return"
 		{ collect_auto4; uci -q get nanopi-control.xui.exclude4 | tr ' ' '\n'; } | sort -u | while read -r cidr; do
 			[ -z "$cidr" ] || echo "iifname \"$lan\" ip daddr $cidr return"
 		done
