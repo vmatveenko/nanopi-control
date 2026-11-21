@@ -9,6 +9,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 control = (ROOT / "root/usr/libexec/nanopi-control/3xui-control").read_text(encoding="utf-8")
 worker = (ROOT / "root/usr/libexec/nanopi-control/routing-worker").read_text(encoding="utf-8")
+startup = (ROOT / "root/etc/init.d/nanopi-control").read_text(encoding="utf-8")
 
 
 def function(source, name):
@@ -47,6 +48,12 @@ assert ipv6.index(reply) < ipv6.index('reject with icmpv6 type admin-prohibited'
 assert 'iifname \\"$lan\\"' in prerouting
 assert 'iifname \\"$lan\\"' in guard
 assert 'iifname \\"$lan\\"' in ipv6
+
+# Package updates restart nanopi-control, so a pre-upgrade nft table must be
+# refreshed without restarting routing on every normal boot.
+assert startup.index("routing_enabled") < startup.index("nft list chain inet nanopi_xui prerouting")
+assert startup.index("! nft list chain inet nanopi_xui prerouting") < startup.index("/etc/init.d/nanopi-routing restart")
+assert reply in startup
 
 # Execute the actual shell generator in both IPv6 modes, with representative
 # user exclusions. This catches quoting and conditional-generation mistakes.

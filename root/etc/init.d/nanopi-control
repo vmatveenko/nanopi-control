@@ -9,6 +9,13 @@ start() {
 	/usr/libexec/nanopi-control/detect-storage >/dev/null 2>&1
 	/usr/libexec/nanopi-control/modules-control sync-menu >/dev/null 2>&1
 	rm -f /tmp/luci-indexcache
+	# The updater restarts this service after replacing package files. Refresh
+	# an existing pre-0.6.2 routing table, whose nft rules otherwise persist.
+	if [ "$(uci -q get nanopi-control.xui.routing_enabled)" = 1 ] &&
+		nft list chain inet nanopi_xui prerouting >/dev/null 2>&1 &&
+		! nft list chain inet nanopi_xui prerouting 2>/dev/null | grep -q 'ct status dnat ct direction reply'; then
+		/etc/init.d/nanopi-routing restart || logger -t nanopi-control 'Не удалось обновить правила маршрутизации после установки пакета'
+	fi
 }
 
 reload() {
